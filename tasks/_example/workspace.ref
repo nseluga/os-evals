@@ -1,0 +1,17 @@
+# Workspace Reference for Example Task
+
+Frozen workspace state (one of):
+
+## Git SHA reference
+```
+repo: <project>
+sha: abc123def456...
+```
+
+## Tarball fallback
+```
+path: /path/to/workspace-snapshot.tar.gz
+sha: <checksum>
+```
+
+This allows `claude -p` to restore the exact state in which the task was authored.
