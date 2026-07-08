@@ -1,0 +1,7 @@
+category: coding
+contaminated: false
+group: clean
+description: |
+  Throwaway proof-of-mechanism task.
+  Ask Claude to write a one-line bash script that prints the current date.
+  Check that the output contains a working `date` command.
