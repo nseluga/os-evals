@@ -1,0 +1,10 @@
+category: coding
+contaminated: false
+group: clean
+description: |
+  Example task demonstrating the contract. Replace with real task metadata.
+
+  Contaminated tasks (whose conclusions live in project READMEs/library notes)
+  are allowed but flagged here. Rung-2 results are split into:
+  - knowledge-informed: task uses facts from ~/os library
+  - clean: task can be solved independently
