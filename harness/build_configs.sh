@@ -7,18 +7,31 @@ set -euo pipefail
 # Isolation mechanism (discovered empirically):
 #   CLAUDE_CONFIG_DIR isolates config storage per run, but daemon-based OAuth auth
 #   is coupled to ~/.claude/daemon. Changing CLAUDE_CONFIG_DIR breaks auth.
-#   SOLUTION: --bare mode + ANTHROPIC_AUTH_TOKEN (OAuth accessToken from keychain)
-#   bypasses the daemon entirely. --add-dir injects per-rung CLAUDE.md content.
+#   SOLUTION: ANTHROPIC_AUTH_TOKEN (OAuth accessToken from keychain) is honored
+#   directly and bypasses the daemon, so it works alongside a per-rung
+#   CLAUDE_CONFIG_DIR for BOTH bare (rungs 1-3) and non-bare (rung 4) runs.
+#
+# Why rung 4 is NOT --bare (also discovered empirically):
+#   --bare drops the Skill tool entirely in headless `claude -p` (verified: the
+#   model reports no Skill tool and cannot invoke any skill). Since rung 4 exists
+#   to exercise skills, it must run NON-bare. Non-bare + CLAUDE_CONFIG_DIR +
+#   ANTHROPIC_AUTH_TOKEN authenticates fine and stays isolated: personal skills
+#   are read from $CLAUDE_CONFIG_DIR/skills, CLAUDE.md from $CLAUDE_CONFIG_DIR/CLAUDE.md,
+#   and auto-memory from settings.json's autoMemoryDirectory — none of it touches
+#   the real ~/.claude. That lets us curate rung 4's skill set to exactly the
+#   skills Nate actually reaches for (see CURATED_SKILLS below) instead of the
+#   whole ~38-skill catalog.
 #
 # Rung layout:
 #   rung1: bare claude, empty dir — no context
 #   rung2: bare + CLAUDE.md via --add-dir
 #   rung3: bare + CLAUDE.md + memory appended inline
-#   rung4: normal claude (no --bare), default ~/.claude — full setup with skills
+#   rung4: non-bare + isolated CLAUDE_CONFIG_DIR — CLAUDE.md + memory (auto-loaded)
+#          + ONLY the curated skill set (not the full catalog); token auth
 #
 # Each rung dir gets:
 #   rung.env    — shell env vars (CLAUDE_CONFIG_DIR, ANTHROPIC_AUTH_TOKEN)
-#   rung.flags  — extra claude flags (--bare --add-dir ...)
+#   rung.flags  — extra claude flags (--bare --add-dir ...); empty for rung 4
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -107,12 +120,81 @@ EOF
 printf '%s\n' "--bare" "--add-dir $RUNG3" > "$RUNG3/rung.flags"
 echo "build_configs.sh: rung3 done (CLAUDE.md + memory)"
 
-# --- Rung 4: full ~/.claude, normal auth, skills auto-loaded ---
-# No CLAUDE_CONFIG_DIR override, no --bare. Daemon auth, full setup.
+# --- Rung 4: everything (CLAUDE.md + memory + skills), but ONLY the curated skills ---
+# Isolated config dir, non-bare (so the Skill tool exists), token auth (so daemon
+# OAuth isn't needed). CLAUDE.md + memory are kept exactly as the full setup has
+# them; the ONLY narrowing vs. the real ~/.claude is the skill list.
+#
+# CURATED_SKILLS: the skills Nate actually reaches for. Rung 4 measures whether
+# THESE earn their keep — so rung-4 deltas attribute to specific skills, not the
+# whole catalog. Keep in sync with the task->skill map in SPEC.md.
+CURATED_SKILLS=(
+    ai-usage-optimizer
+    dev-team
+    dev-team-auto
+    baseball-research-advisor
+    dt-analyze
+    dt-engineer
+    dt-qa
+    dt-review
+    dt-fix
+    dt-ui
+)
+
 RUNG4="$CONFIGS_DIR/rung4"
-mkdir -p "$RUNG4"
-: > "$RUNG4/rung.env"    # empty: no overrides
-: > "$RUNG4/rung.flags"  # empty: no extra flags
-echo "build_configs.sh: rung4 done (full ~/.claude, normal auth)"
+rm -rf "$RUNG4"                       # rebuild clean so a shrunk skill set can't leave stragglers
+mkdir -p "$RUNG4/memory" "$RUNG4/skills"
+
+# CLAUDE.md — same copy as rung2/rung3 (auto-discovered as $CLAUDE_CONFIG_DIR/CLAUDE.md)
+cp "$CLAUDE_DIR/CLAUDE.md" "$RUNG4/CLAUDE.md"
+
+# Memory — snapshot ALL files INCLUDING MEMORY.md (the index), so the real
+# auto-memory mechanism loads it (rung 3 inlines instead because --bare skips auto-memory).
+if [ -d "$CLAUDE_DIR/memory" ]; then
+    for f in "$CLAUDE_DIR/memory/"*.md; do
+        [ -f "$f" ] || continue
+        cp "$f" "$RUNG4/memory/$(basename "$f")"
+    done
+fi
+
+# settings.json — enable auto-memory pointed at THIS rung's snapshot (isolated, reproducible)
+cat > "$RUNG4/settings.json" << EOF
+{
+  "autoMemoryEnabled": true,
+  "autoMemoryDirectory": "$RUNG4/memory"
+}
+EOF
+
+# skills/ — symlink ONLY the curated set from $CLAUDE_DIR/skills
+missing=()
+for s in "${CURATED_SKILLS[@]}"; do
+    src="$CLAUDE_DIR/skills/$s"
+    if [ -d "$src" ]; then
+        ln -s "$src" "$RUNG4/skills/$s"
+    else
+        missing+=("$s")
+    fi
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+    echo "build_configs.sh: ERROR rung4 curated skills not found in $CLAUDE_DIR/skills: ${missing[*]}" >&2
+    exit 1
+fi
+
+cat > "$RUNG4/rung.env" << EOF
+CLAUDE_CONFIG_DIR=$RUNG4
+ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN
+EOF
+: > "$RUNG4/rung.flags"   # empty: NON-bare (Skill tool must exist), no --add-dir needed
+
+# Verify: rung4/skills exposes EXACTLY the curated set and none of the other ~38.
+built_skills="$(cd "$RUNG4/skills" && ls -1 | sort)"
+want_skills="$(printf '%s\n' "${CURATED_SKILLS[@]}" | sort)"
+if [ "$built_skills" != "$want_skills" ]; then
+    echo "build_configs.sh: ERROR rung4 skill set mismatch." >&2
+    echo "  built: $(echo "$built_skills" | tr '\n' ' ')" >&2
+    echo "  want:  $(echo "$want_skills" | tr '\n' ' ')" >&2
+    exit 1
+fi
+echo "build_configs.sh: rung4 done (isolated, non-bare, token auth; ${#CURATED_SKILLS[@]} curated skills)"
 
 echo "build_configs.sh: all 4 rungs written to $CONFIGS_DIR"
