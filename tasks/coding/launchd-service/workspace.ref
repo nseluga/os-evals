@@ -1,0 +1,25 @@
+# Workspace Reference — launchd-service
+
+## Git SHA reference
+```
+repo: project-dashboard
+origin: (local) /Users/nateseluga/project-dashboard
+sha: dd656f3
+sha_full: dd656f3   # resolve with: git -C ~/project-dashboard rev-parse dd656f3
+date: 2026-07-08T20:26:29-04:00
+```
+
+Rationale: the source session (7dd5bc6c) started 2026-07-09T00:46Z. dd656f3 is the
+repo HEAD immediately before it — the exact state in which the task was posed.
+
+## Tarball fallback
+```
+path: (to be generated) tasks/coding/launchd-service/workspace.tar.gz
+build: git -C ~/project-dashboard archive --format=tar.gz -o <path> dd656f3
+```
+
+## Restore contract (proposed — see CONTRACT-NOTE.md)
+The harness must materialize this state into a per-run temp dir, run `claude -p` with
+that dir as cwd, and pass its path to check.sh as WORKSPACE_DIR. node_modules is NOT
+in the tarball; the launchd check does not require an install (it only inspects the
+plist/scripts as text), so no `npm install` is needed for this task.
