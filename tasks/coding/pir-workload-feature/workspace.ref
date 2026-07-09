@@ -3,7 +3,7 @@
 ## Git SHA reference
 ```
 repo: Pitcher-Injury-Risk
-origin: (local) /Users/nateseluga/Pitcher-Injury-Risk
+origin: /Users/nateseluga/Pitcher-Injury-Risk
 sha: cf84a6b^        # parent of "notebook 5 draft" (cf84a6b), which introduced acwr_7_28
 solution_sha: cf84a6b  # the real implementation, for the NEEDS-VALIDATION dry-run
 ```

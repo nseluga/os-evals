@@ -20,6 +20,7 @@ Outputs:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,18 +51,29 @@ def extract_stats(transcript: dict) -> dict:
     }
 
 
-def run_check(task: str, transcript_text: str, tasks_dir: Path) -> tuple[bool, str]:
-    """Run tasks/{task}/check.sh with transcript on stdin. Returns (passed, output)."""
+def run_check(
+    task: str, transcript_text: str, tasks_dir: Path, workspace_dir: str = ""
+) -> tuple[bool, str]:
+    """Run tasks/{task}/check.sh with transcript on stdin. Returns (passed, output).
+
+    For coding tasks, workspace_dir (from transcript _meta) is passed as WORKSPACE_DIR
+    so filesystem/test-based checks can inspect what the model wrote. Text-only checks
+    ignore it (they read only stdin), keeping the original contract a strict subset."""
     check_sh = tasks_dir / task / "check.sh"
     if not check_sh.exists():
         return False, f"check.sh not found: {check_sh}"
+
+    env = {**os.environ}
+    if workspace_dir:
+        env["WORKSPACE_DIR"] = workspace_dir
 
     result = subprocess.run(
         [str(check_sh)],
         input=transcript_text,
         capture_output=True,
         text=True,
-        timeout=30,
+        env=env,
+        timeout=300,
     )
     output = (result.stdout + result.stderr).strip()
     return result.returncode == 0, output
@@ -78,7 +90,8 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     model = meta.get("model", "unknown")
 
     stats = extract_stats(transcript)
-    passed, check_output = run_check(task, transcript_text, tasks_dir)
+    workspace_dir = meta.get("workspace_dir", "")
+    passed, check_output = run_check(task, transcript_text, tasks_dir, workspace_dir)
 
     return {
         "file": run_file.name,

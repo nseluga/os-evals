@@ -30,10 +30,53 @@ REPO_ROOT = Path(__file__).parent.parent
 
 
 def find_tasks(tasks_dir: Path) -> list[str]:
-    return sorted(
-        d.name for d in tasks_dir.iterdir()
-        if d.is_dir() and not d.name.startswith("_")
+    """Task ids are paths (relative to tasks_dir) of any dir holding a prompt.md.
+
+    Supports both flat tasks (tasks/print-date) and category-grouped tasks
+    (tasks/coding/launchd-service). Any path segment starting with '_' is skipped
+    (e.g. tasks/_example)."""
+    tasks = []
+    for prompt in tasks_dir.rglob("prompt.md"):
+        rel = prompt.parent.relative_to(tasks_dir)
+        if any(seg.startswith("_") for seg in rel.parts):
+            continue
+        tasks.append(rel.as_posix())
+    return sorted(tasks)
+
+
+def _slug(task: str) -> str:
+    """Filesystem-safe token for a task id (which may contain '/')."""
+    return task.replace("/", "-")
+
+
+def restore_workspace(task_dir: Path, dest: Path) -> None:
+    """Materialize a task's frozen workspace into dest, per its workspace.ref.
+
+    Parses the first `origin:` (abs path to a local git repo) and first `sha:`
+    (base ref) from workspace.ref and does `git archive <sha> | tar -x`. node_modules
+    / venvs are intentionally NOT in the archive — provision them via setup.sh."""
+    ref = task_dir / "workspace.ref"
+    origin = sha = None
+    for line in ref.read_text().splitlines():
+        s = line.strip()
+        if origin is None and s.startswith("origin:"):
+            origin = s.split(":", 1)[1].strip()
+        elif sha is None and s.startswith("sha:"):
+            sha = s.split(":", 1)[1].split("#", 1)[0].strip()
+    if not origin or not sha:
+        raise ValueError(f"workspace.ref missing origin/sha: {ref}")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    archive = subprocess.run(
+        ["git", "-C", origin, "archive", "--format=tar", sha],
+        capture_output=True, check=True,
     )
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+
+    setup = (task_dir / "setup.sh").resolve()
+    if setup.exists():
+        print(f"    workspace: running setup.sh in {dest}", flush=True)
+        subprocess.run(["bash", str(setup)], cwd=str(dest), check=True, timeout=1200)
 
 
 def load_rung(configs_dir: Path, rung: int) -> tuple[dict[str, str], list[str]]:
@@ -69,7 +112,8 @@ def run_one(
     runs_dir: Path,
 ) -> Path:
     """Run claude -p for one task/rung/model combo. Returns path to saved transcript."""
-    prompt_file = tasks_dir / task / "prompt.md"
+    task_dir = tasks_dir / task
+    prompt_file = task_dir / "prompt.md"
     if not prompt_file.exists():
         raise FileNotFoundError(f"prompt.md not found: {prompt_file}")
 
@@ -80,6 +124,20 @@ def run_one(
     cmd.extend(["--dangerously-skip-permissions"])
 
     env = {**os.environ, **env_vars}
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{ts}_{_slug(task)}_rung{rung}_{model.replace('-', '_')}"
+
+    # If the task ships a frozen workspace, restore it and run claude inside it so
+    # the files the model writes are inspectable by check.sh (via WORKSPACE_DIR).
+    ws_dir = None
+    cwd = None
+    if (task_dir / "workspace.ref").exists():
+        ws_dir = runs_dir / f"{run_id}.ws"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        print(f"    restoring workspace -> {ws_dir}", flush=True)
+        restore_workspace(task_dir, ws_dir)
+        cwd = str(ws_dir)
 
     print(f"  running: rung{rung} task={task} model={model}", flush=True)
     print(f"    flags: {extra_flags}", flush=True)
@@ -94,6 +152,7 @@ def run_one(
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         timeout=300,
     )
 
@@ -116,10 +175,10 @@ def run_one(
         "returncode": result.returncode,
         "stderr": result.stderr[:2000] if result.stderr else "",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "workspace_dir": str(ws_dir) if ws_dir else "",
     }
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_file = runs_dir / f"{ts}_{task}_rung{rung}_{model.replace('-', '_')}.json"
+    out_file = runs_dir / f"{run_id}.json"
     runs_dir.mkdir(parents=True, exist_ok=True)
     out_file.write_text(json.dumps(transcript, indent=2))
     print(f"    saved: {out_file.name}", flush=True)

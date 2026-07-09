@@ -3,7 +3,7 @@
 ## Git SHA reference
 ```
 repo: project-dashboard
-origin: (local) /Users/nateseluga/project-dashboard
+origin: /Users/nateseluga/project-dashboard
 sha: dd656f3
 sha_full: dd656f3   # resolve with: git -C ~/project-dashboard rev-parse dd656f3
 date: 2026-07-08T20:26:29-04:00

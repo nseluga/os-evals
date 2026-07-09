@@ -19,7 +19,12 @@ if [ -z "$WS" ] || [ ! -d "$WS" ]; then
     exit 2
 fi
 
-PY="${PYTHON_BIN:-python3}"
+# Prefer the venv setup.sh provisioned in the restored workspace.
+if [ -x "$WS/.venv/bin/python" ]; then
+    PY="$WS/.venv/bin/python"
+else
+    PY="${PYTHON_BIN:-python3}"
+fi
 
 WS="$WS" "$PY" - <<'PY'
 import os, sys

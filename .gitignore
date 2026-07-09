@@ -1,2 +1,4 @@
 configs/
 runs/
+__pycache__/
+*.pyc

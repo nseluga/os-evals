@@ -3,32 +3,30 @@
 Read this before approving the 3 coding tasks. It covers (A) a contract change the
 coding checks require, and (B) the per-check audit for setup-flattering bias.
 
-## A. The proven contract does NOT support coding checks yet — STOP-and-tell
+## A. WORKSPACE_DIR extension — IMPLEMENTED (you approved the shape)
 
-The smoke-tested contract (branch `worktree-proof-of-mechanism`) does exactly this:
-- `run_matrix.py` pipes `prompt.md` into `claude -p` with **no workspace / no cwd**.
-- `score.py` runs `check.sh` with **only the transcript JSON on stdin** — no filesystem.
-- `print-date/check.sh` therefore greps the final `result` text. That is the whole contract.
+The smoke-tested contract only supported text checks: `run_matrix.py` piped `prompt.md`
+into `claude -p` with no cwd, and `score.py` gave `check.sh` only the transcript. Real
+coding tasks modify files, so that can't score them. You approved the extension shape
+(env-var + shell check, per-task `setup.sh`); it is now wired into the harness on this
+branch, additively and backward-compatibly:
 
-Every real coding task modifies files, so a text-only check cannot score it. To keep
-faith with "fit the proven contract or stop and tell you" — I stopped. All three checks
-are written against a **minimal proposed extension**, not silently wired in:
-
-1. `run_matrix.py`: for a task with a `workspace.ref`, materialize the frozen state
-   (git archive of the SHA, or the tarball) into a per-run temp dir, provision deps if
-   the task needs them (`npm ci`, `python -m venv`), and run `claude -p` with that dir
-   as **cwd**.
-2. `score.py`: pass that dir to `check.sh` as the **`WORKSPACE_DIR`** env var.
-3. Checks still receive the transcript on stdin (they `cat >/dev/null` it) so the
-   text-only contract is a strict subset — `print-date` keeps working unchanged.
-
-This is additive and backward-compatible. **I have not modified the harness.** If you
-approve the tasks, approving this extension is the prerequisite; if you'd rather shape
-it differently (e.g., check runs inside the sandbox, or a `check(workspace, transcript)`
-Python signature instead of a shell env var), say so and I'll rewrite the checks to match.
+1. `run_matrix.py` — for a task with a `workspace.ref`, `restore_workspace()` parses its
+   `origin:`/`sha:`, does `git archive <sha> | tar -x` into a persisted per-run dir
+   (`runs/<run_id>.ws`), runs the task's optional `setup.sh` there (deps: `npm ci` /
+   `venv`), then runs `claude -p` with that dir as **cwd**. The dir is recorded in
+   `_meta.workspace_dir`.
+2. `score.py` — reads `_meta.workspace_dir` and passes it to `check.sh` as **`WORKSPACE_DIR`**.
+3. Checks still drain the transcript on stdin, so the old text-only contract is a strict
+   subset — `print-date` runs unchanged. `find_tasks` now also discovers category-grouped
+   tasks (`tasks/coding/<name>`), not just flat ones.
 
 Each check exits `2` (not `1`) when `WORKSPACE_DIR` is unset — an infra error distinct
-from a task failure, so a missing extension can never masquerade as a passing/failing run.
+from a task failure, so a missing/broken restore can never masquerade as a real verdict.
+
+Open follow-ups (not blocking approval): (a) `runs/*.ws` dirs are persisted for scoring
+and should be cleaned by `run.sh` after `score.py`; (b) `npm ci`/venv per run adds time —
+we can cache a warm `node_modules`/`.venv` and copy it in if the 48-run matrix gets slow.
 
 ## B. Setup-flattering audit (what you asked me to flag)
 
@@ -46,14 +44,19 @@ to help achieve it — that delta is exactly what the eval wants to detect.
 - Residual nit: asserts the exact log paths `/tmp/project-dashboard.*`. Those are given
   verbatim in the prompt, so that's spec-compliance, not scaffold-reward.
 
-### 2. dashboard-inbox — clean — LOW risk, one adjacency to watch ⚠️
-- Check = the repo's OWN behavioral test (`inbox-ui.test.ts`, vendored so the model
-  can't edit it). Rewards a correct implementation, not scaffold presence.
+### 2. dashboard-digest — clean — LOW risk, one adjacency to watch ✅
+- (Swapped from dashboard-inbox during the validation pass: the inbox test turned out to
+  be a LIVE integration test needing a running dev server — a bad fit for a headless
+  one-shot. Item 3.1's digest test is a PURE unit test, so I moved to it. Same repo, same
+  spirit, cleaner gate.)
+- Check = the repo's OWN pure unit test (`digest.test.ts` on `computeDigestBuckets`,
+  vendored so the model can't edit it). Explicit boundary cases (<=7 vs 8 days, overdue
+  exclusion, missing due_date). Rewards a correct implementation, not scaffold presence.
 - Adjacency to watch: the PLAN item references `~/portfolio/STANDARDS.md` for *style*.
-  The test checks *behavior*, not style, so passing does not require those docs — but a
-  rung-4 run could still "feel" advantaged. Flagged, not a contamination.
-- STATUS: NEEDS-VALIDATION — I have not yet dry-run the vendored test against the real
-  solution commit (c8dee19/10db84a) from base 5a4c800 to confirm it's an achievable gate.
+  The test checks *behavior*, not style, so passing does not require those docs. Flagged,
+  not a contamination.
+- STATUS: VALIDATED — real `digest.ts` (from 5a4c800) passes 19/19; breaking the `<=7`
+  boundary to `<7` fails the boundary test as expected. Fair, achievable gate.
 
 ### 3. pir-workload-feature — knowledge-informed / contaminated — HIGHEST risk, mitigated ⚠️⚠️
 - This is the batch's deliberate contaminated task, and the sharpest audit case.
@@ -69,15 +72,17 @@ to help achieve it — that delta is exactly what the eval wants to detect.
   Claude may invert the ratio or leak the current game and fail. That is the eval working
   as intended — not flattery — because the check is a real behavioral test.
 - Honest caveats: (a) sourced from git, not session history (PIR sessions are thin);
-  (b) I authored the test, so I control the gate — higher scrutiny warranted;
-  (c) STATUS: NEEDS-VALIDATION — I must confirm the base cf84a6b^ ships the rolling-window
-  helpers (so the task really is "add ACWR," not "build the module"), that the check
-  passes the real cf84a6b implementation, and that it fails an inverted/leaky one.
+  (b) I authored the test, so I control the gate — higher scrutiny warranted.
+- STATUS: VALIDATED — base cf84a6b^ ships the rolling helpers but not `acwr_7_28` (so the
+  task really is "add ACWR", 119 lines vs 200 at HEAD); the real cf84a6b implementation
+  passes; an inverted (chronic/acute) implementation fails. Fair, achievable gate.
 
-## C. Open questions for you
-1. Approve the `WORKSPACE_DIR` contract extension (Section A), or reshape it?
-2. Two of three tasks are from project-dashboard. Acceptable for representativeness, or
-   swap one for a Patio task? (Patio's backend is Flask+Supabase — network deps make
-   headless checks much harder, which is why I leaned on project-dashboard.)
-3. OK to spend a validation pass running tasks 2 & 3 checks against their real solution
-   commits before you rely on them? (Recommended — removes the NEEDS-VALIDATION flags.)
+## C. Status / remaining question
+- ✅ WORKSPACE_DIR extension implemented (Section A) — approved shape.
+- ✅ Validation pass done — all three checks pass their real solutions and fail broken
+  ones (launchd: npm-plist; digest: broken boundary; pir: inverted ratio).
+- ⚠️ Still open: two of three tasks are project-dashboard. Acceptable for representativeness,
+  or swap one for a Patio task? (Patio's backend is Flask+Supabase — network deps make
+  headless checks much harder, which is why I leaned on project-dashboard. My
+  recommendation: keep as-is for the coding batch and get Patio coverage in the analysis
+  batch instead.)
