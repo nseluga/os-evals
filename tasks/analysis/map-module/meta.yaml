@@ -1,0 +1,22 @@
+category: analysis
+contaminated: false
+group: clean
+curated_skill: dt-analyze
+source: real project-dashboard merge pipeline @ 185eda8
+description: |
+  Exercises dt-analyze (Code Analyzer): map an unfamiliar multi-file module before a
+  change, naming the right entry points and seams. The model reads src/lib/* in a
+  restored read-only workspace and emits a text map.
+
+  contaminated: false. group: clean — the answer is derivable purely from reading the
+  code; nothing in ~/os records this map. The ~/os advantage, if any, is the analyzer
+  skill's discipline at producing a correct, seam-aware map.
+
+  Check type: objective assertion on the map text (stdin transcript .result). The map
+  must name the entry point getMergedProjects, both upstream stages (getProjects,
+  readManual), the merge/combination step, and the concurrency seam (the mutex) OR the
+  override-whitelist seam. Convention-agnostic on wording; anchors are the real symbol
+  names, which a correct map must reference.
+
+  STATUS: VALIDATED locally — a correct map naming those symbols passes; a vague map
+  that omits the entry point / stages fails.

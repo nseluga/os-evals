@@ -1,0 +1,26 @@
+category: writing
+contaminated: false
+group: clean
+curated_skill: baseball-research-advisor
+source: authored fixture (self-contained; classic evaluation-design flaws)
+description: |
+  Exercises baseball-research-advisor: skeptically peer-review a baseball analytics
+  methodology and name the real flaws. Self-contained (methodology inline); no ~/os
+  facts required, so it's clean. The eval measures whether the skill makes the critique
+  reliably catch the serious design errors.
+
+  Planted flaws (all classic, all defensible to require):
+    1. TEMPORAL LEAKAGE via random split — pitcher-seasons are time-ordered; a random
+       80/20 split lets future seasons train the model that predicts past ones (should
+       be a time-based / forward-chaining split).
+    2. TARGET/FEATURE LEAKAGE — "innings and days on the IL IN the season we're
+       predicting" are outcomes, not predictors; they leak the label.
+    3. WRONG METRIC ON IMBALANCE — 94% accuracy on a 6%-positive problem is near the
+       always-predict-negative baseline; needs precision/recall/AUC/PR.
+
+  Check: PASS iff the critique names at least TWO of the three specific flaws (leakage
+  from random split, label leakage from same-season features, accuracy-on-imbalance),
+  matched on concept with several synonyms each.
+
+  STATUS: VALIDATED locally — a critique hitting 2–3 flaws passes; a "looks solid, ship
+  it" reply fails.

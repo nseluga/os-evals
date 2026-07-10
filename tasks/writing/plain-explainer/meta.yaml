@@ -1,0 +1,31 @@
+category: writing
+contaminated: false
+group: knowledge-informed
+curated_skill: none (tests memory BEHAVIOR preferences — rung 3)
+source: authored fixture aimed squarely at two memory facts
+description: |
+  A rung-3 task by design: it measures whether the MEMORY layer's behavior preferences
+  change how Claude answers. Two memory facts apply:
+    - 'feedback-explain-concepts-plainly' — lead with plain English when introducing a
+      Claude Code workflow concept.
+    - 'feedback-surface-tradeoffs-proactively' — volunteer drawbacks/tradeoffs with any
+      recommendation, without being asked.
+  A model WITHOUT that memory tends to give an enthusiastic definition and a flat
+  "yes, set it up" with no tradeoffs.
+
+  contaminated: false (the facts are behavior instructions, not the answer). group:
+  knowledge-informed — the behavior comes from ~/os memory.
+
+  Check type (objective proxy):
+    - Plain-English definition present early: within the first ~90 words it says a hook
+      is a command/script that RUNS on an EVENT/automatically (not just jargon).
+    - Tradeoffs surfaced: names at least one concrete drawback of auto-format-on-save
+      hooks (e.g. slows/blocks saves, silent/opaque failures, surprising diffs, fights
+      the formatter/config, hides errors) — matched on concept.
+  PASS iff BOTH hold.
+
+  NOTE: MODERATE-confidence check (behavioral proxy). The rung2->rung3 delta is the
+  signal of interest.
+
+  STATUS: VALIDATED locally — a plain, tradeoff-surfacing answer passes; a jargon-first,
+  no-caveats answer fails.

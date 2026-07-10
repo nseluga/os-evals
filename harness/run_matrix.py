@@ -50,28 +50,48 @@ def _slug(task: str) -> str:
 
 
 def restore_workspace(task_dir: Path, dest: Path) -> None:
-    """Materialize a task's frozen workspace into dest, per its workspace.ref.
+    """Materialize a task's frozen workspace into dest.
 
-    Parses the first `origin:` (abs path to a local git repo) and first `sha:`
-    (base ref) from workspace.ref and does `git archive <sha> | tar -x`. node_modules
-    / venvs are intentionally NOT in the archive — provision them via setup.sh."""
+    Two additive, composable sources (a task may use either or both):
+      1. Git ref — if workspace.ref names an `origin:` (abs path to a local git repo)
+         and a `sha:` (base ref), does `git archive <sha> | tar -x` into dest.
+      2. Seed overlay — if the task ships a `seed/` dir, its contents are copied into
+         dest (over the git tree if both are present). This lets self-contained
+         analysis/writing tasks ship their own fixture files without a throwaway
+         commit in a real repo.
+    node_modules / venvs are intentionally NOT archived — provision them via setup.sh."""
+    import shutil
+
     ref = task_dir / "workspace.ref"
     origin = sha = None
-    for line in ref.read_text().splitlines():
-        s = line.strip()
-        if origin is None and s.startswith("origin:"):
-            origin = s.split(":", 1)[1].strip()
-        elif sha is None and s.startswith("sha:"):
-            sha = s.split(":", 1)[1].split("#", 1)[0].strip()
-    if not origin or not sha:
-        raise ValueError(f"workspace.ref missing origin/sha: {ref}")
+    if ref.exists():
+        for line in ref.read_text().splitlines():
+            s = line.strip()
+            if origin is None and s.startswith("origin:"):
+                origin = s.split(":", 1)[1].strip()
+            elif sha is None and s.startswith("sha:"):
+                sha = s.split(":", 1)[1].split("#", 1)[0].strip()
+
+    seed = task_dir / "seed"
+    if not (origin and sha) and not seed.is_dir():
+        raise ValueError(f"workspace.ref names no origin/sha and no seed/ dir: {task_dir}")
 
     dest.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.run(
-        ["git", "-C", origin, "archive", "--format=tar", sha],
-        capture_output=True, check=True,
-    )
-    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+
+    if origin and sha:
+        archive = subprocess.run(
+            ["git", "-C", origin, "archive", "--format=tar", sha],
+            capture_output=True, check=True,
+        )
+        subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+
+    if seed.is_dir():
+        for item in seed.iterdir():
+            target = dest / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
 
     setup = (task_dir / "setup.sh").resolve()
     if setup.exists():
@@ -128,16 +148,21 @@ def run_one(
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"{ts}_{_slug(task)}_rung{rung}_{model.replace('-', '_')}"
 
-    # If the task ships a frozen workspace, restore it and run claude inside it so
-    # the files the model writes are inspectable by check.sh (via WORKSPACE_DIR).
-    ws_dir = None
-    cwd = None
-    if (task_dir / "workspace.ref").exists():
-        ws_dir = runs_dir / f"{run_id}.ws"
-        runs_dir.mkdir(parents=True, exist_ok=True)
+    # Every run gets its OWN isolated per-run dir as cwd. If the task ships a frozen
+    # workspace (workspace.ref and/or seed/), it's restored there so files the model
+    # writes are inspectable by check.sh (via WORKSPACE_DIR). If the task has NEITHER,
+    # the dir is left empty — a leak guard so text-only analysis/writing tasks never
+    # run in (and read from) the eval repo itself.
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    ws_dir = runs_dir / f"{run_id}.ws"
+    has_ref = (task_dir / "workspace.ref").exists()
+    has_seed = (task_dir / "seed").is_dir()
+    if has_ref or has_seed:
         print(f"    restoring workspace -> {ws_dir}", flush=True)
         restore_workspace(task_dir, ws_dir)
-        cwd = str(ws_dir)
+    else:
+        ws_dir.mkdir(parents=True, exist_ok=True)
+    cwd = str(ws_dir)
 
     print(f"  running: rung{rung} task={task} model={model}", flush=True)
     print(f"    flags: {extra_flags}", flush=True)

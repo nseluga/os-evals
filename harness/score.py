@@ -79,6 +79,24 @@ def run_check(
     return result.returncode == 0, output
 
 
+def read_task_meta(tasks_dir: Path, task: str) -> dict:
+    """Pull curated_skill + category from a task's meta.yaml (best-effort, no yaml dep)."""
+    meta_file = tasks_dir / task / "meta.yaml"
+    out = {"curated_skill": "", "category": "", "contaminated": False, "group": ""}
+    if not meta_file.exists():
+        return out
+    for line in meta_file.read_text().splitlines():
+        s = line.strip()
+        for key in ("curated_skill", "category", "group"):
+            if s.startswith(f"{key}:"):
+                val = s.split(":", 1)[1].strip()
+                # first token, strip any trailing parenthetical note
+                out[key] = val.split("(")[0].split("#")[0].strip()
+        if s.startswith("contaminated:"):
+            out["contaminated"] = s.split(":", 1)[1].strip().lower().startswith("true")
+    return out
+
+
 def score_run(run_file: Path, tasks_dir: Path) -> dict:
     """Score one transcript file. Returns a score record."""
     transcript_text = run_file.read_text()
@@ -92,6 +110,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     stats = extract_stats(transcript)
     workspace_dir = meta.get("workspace_dir", "")
     passed, check_output = run_check(task, transcript_text, tasks_dir, workspace_dir)
+    task_meta = read_task_meta(tasks_dir, task)
 
     return {
         "file": run_file.name,
@@ -101,6 +120,10 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "passed": passed,
         "check_output": check_output,
         "result_snippet": transcript.get("result", "")[:200],
+        "curated_skill": task_meta["curated_skill"],
+        "category": task_meta["category"],
+        "contaminated": task_meta["contaminated"],
+        "group": task_meta["group"],
         **stats,
     }
 

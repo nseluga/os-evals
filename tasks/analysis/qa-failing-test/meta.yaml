@@ -1,0 +1,24 @@
+category: analysis
+contaminated: false
+group: clean
+curated_skill: dt-qa
+source: authored fixture (self-contained; planted contract bug)
+description: |
+  Exercises dt-qa (QA / Tester): given an implementation whose behavior violates its
+  documented contract, author tests that actually CATCH the discrepancy. The gate is
+  discrimination, not coverage vanity.
+
+  The seed bank.py claims (in its docstring) that pct is clamped to 0-100 but does not
+  clamp it, so apply_discount(100, 150) returns -50 and apply_discount(100, -50)
+  returns 150. A thorough test of the documented boundary/out-of-range behavior fails
+  on this buggy code and passes on a clamped implementation.
+
+  contaminated: false. group: clean — nothing in ~/os records the answer; the skill's
+  value is the discipline to test the contract's edges, not just the happy path.
+
+  Check type: run the model's test_solution.py (a) against the BUGGY bank.py (must
+  FAIL, exit != 0) and (b) against the CORRECT bank.py (must PASS, exit 0). PASS iff
+  the test discriminates. Uses seed/ + WORKSPACE_DIR; pure Python (no deps, no setup.sh).
+
+  STATUS: VALIDATED locally — a boundary-aware test discriminates (pass); a happy-path-
+  only test passes on both impls and is correctly failed.

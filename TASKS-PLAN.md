@@ -22,23 +22,51 @@ tasks naturally exercise. The remaining dev-team specialist skills (`dt-analyze`
 `dt-qa`, `dt-review`, `dt-fix`, `dt-ui`) and the meta/auto skills need purpose-built
 tasks — see below.
 
-## Still needs a task authored (next session picks up here)
+## Analysis batch (authored + validated)
 
-The task cases for these curated skills are NOT yet written. Each needs a frozen
-workspace + an objective check that specifically stresses that skill's job:
+| Task | Curated skill | What it probes | Status |
+|------|---------------|----------------|--------|
+| `analysis/map-module` | `dt-analyze` | Map the real project-dashboard merge pipeline (read-only git workspace); check names the entry point, both stages, merge step, and mutex seam. | ✅ authored + validated |
+| `analysis/review-flaw` | `dt-review` | Flawed module inline (SQL injection, hardcoded secret, O(n·m) join); check the review names the injection + ≥1 more. | ✅ authored + validated |
+| `analysis/usage-audit` | `ai-usage-optimizer` | Snapshot of skills/memory/usage log; check names dev-team as under-used + picks a reasoning-grade model. ⚠️ deliberate skill-reward (flagged, like pir). | ✅ authored + validated |
+| `analysis/qa-failing-test` | `dt-qa` | Seed a contract-violating `apply_discount`; model writes a test; check it DISCRIMINATES (fails buggy, passes fixed). | ✅ authored + validated |
 
-| Curated skill | Task idea (starting point — not final) | Likely batch |
-|---------------|----------------------------------------|--------------|
-| `ai-usage-optimizer` | Given a (frozen) snapshot of skills/memory/usage, produce a correct "which subsystem is under-used / which model for task X" audit; check against an authored answer key. | analysis |
-| `dev-team-auto` | Autonomous PLAN.md → drive multiple items to completion unattended; check that each item's authored gate passes + PROGRESS.md updated. | coding |
-| `dt-analyze` | Map an unfamiliar multi-file module before a change; check that the produced map names the right seams/entry points (assertion checklist). | coding/analysis |
-| `dt-qa` | Given an implementation with a planted bug, author tests that catch it; check that the emitted tests fail on the bug and pass on the fix. | coding |
-| `dt-review` | Given code with a known efficiency/scalability/security flaw, produce a review that flags it; check the report names the real issue. | coding/analysis |
-| `dt-fix` | Given a review report + code, apply the fixes; check the cited issues are resolved and behavior preserved. | coding |
-| `dt-ui` | Frontend task (layout/hierarchy/a11y) with an objective check (e.g. axe assertions, DOM/structure checks). | coding |
+## Writing batch (authored + validated)
 
-Coverage so far: 3/10 curated skills have a validated task (`baseball-research-advisor`,
-`dt-engineer`, `dev-team`). 7 curated skills still need a task authored.
+| Task | Curated skill / layer | What it probes | Status |
+|------|-----------------------|----------------|--------|
+| `writing/baseball-methodology-critique` | `baseball-research-advisor` | Flawed eval methodology inline; check names ≥2 of {random-split leakage, same-season label leakage, accuracy-on-imbalance}. | ✅ authored + validated |
+| `writing/portfolio-writeup` | knowledge routing + memory style | Portfolio blurb; check: short, no marketing buzzwords, ≥2 concrete specifics. Tests rung 2/3, not a skill. | ✅ authored + validated |
+| `writing/plain-explainer` | memory behavior (rung 3) | Explain a hook + recommend; check: plain early definition + a surfaced tradeoff. Tests the two memory behavior facts. | ✅ authored + validated |
 
-STOP POINT: per this session's scope, the remaining analysis/writing task cases were
-intentionally NOT authored. This table is the clean handoff for writing them.
+## Coding batch — 4th task added
+
+| `coding/apply-review-fixes` | `dt-fix` | Seed handler.py + REVIEW.md (hardcoded secret, eval(), no timeout); check all three fixes applied + behavior preserved. | ✅ |
+| `coding/dashboard-a11y` | `dt-ui` | Seed index.html with a11y violations; check via stdlib HTML parser (alt text, control names, labels, real click targets). | ✅ |
+
+## Coverage
+
+**9 of 10 curated skills now have a validated task:** `baseball-research-advisor` (×2),
+`dt-engineer`, `dev-team`, `dt-analyze`, `dt-review`, `ai-usage-optimizer`, `dt-qa`,
+`dt-fix`, `dt-ui`.
+
+**Not covered — `dev-team-auto` (deferred, with reason):** it orchestrates multiple
+sub-agent convergence loops across a whole PLAN.md and spawns worktrees — minutes-to-hours
+of unattended work. A headless `claude -p` one-shot with a 300s timeout cannot exercise it
+faithfully, and a shrunk "2-item PLAN" would test a stub, not the skill. Authoring it well
+needs a different harness mode (long-running, worktree-aware) — out of scope for the
+one-shot matrix. Flagged here rather than faked.
+
+Category balance ended at coding=5, analysis=4, writing=3 (12 total) — a mild deviation
+from the 4/4/4 ideal, driven by which curated skills are coding- vs. text-shaped. The
+scorecard groups by task and by skill, so the imbalance doesn't distort the verdict.
+
+## Harness extensions this batch added (additive, backward-compatible)
+- `run_matrix.py`: tasks may ship a `seed/` dir (copied into the per-run workspace) so
+  self-contained analysis/writing tasks need no throwaway repo commit; and EVERY run now
+  gets its own isolated per-run dir as cwd (empty for pure-text tasks) — a leak guard so a
+  text task never reads the eval repo itself.
+- `score.py`: attaches `curated_skill` / `category` / `contaminated` / `group` from each
+  task's meta.yaml to its score record.
+- `stats.py`: cost-per-rung, and a plain-English **Verdict** section (layer-transition
+  net wins, per-skill rung3→rung4 lift, per-task pass matrix).
