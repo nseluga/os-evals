@@ -76,7 +76,10 @@ def run_check(
         timeout=300,
     )
     output = (result.stdout + result.stderr).strip()
-    return result.returncode == 0, output
+    # rc convention: 0 = pass, 1 = real task failure, 2 = infra/unscoreable (e.g. the
+    # workspace was not retained). Callers use rc to avoid counting an infra error as a
+    # genuine failure.
+    return result.returncode == 0, output, result.returncode
 
 
 def read_task_meta(tasks_dir: Path, task: str) -> dict:
@@ -109,7 +112,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
 
     stats = extract_stats(transcript)
     workspace_dir = meta.get("workspace_dir", "")
-    passed, check_output = run_check(task, transcript_text, tasks_dir, workspace_dir)
+    passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
     task_meta = read_task_meta(tasks_dir, task)
 
     return {
@@ -118,6 +121,8 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "rung": rung,
         "model": model,
         "passed": passed,
+        "check_rc": check_rc,
+        "infra_error": check_rc == 2,
         "check_output": check_output,
         "result_snippet": transcript.get("result", "")[:200],
         "curated_skill": task_meta["curated_skill"],
