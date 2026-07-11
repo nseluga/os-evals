@@ -1,0 +1,15 @@
+category: coding
+contaminated: false
+group: clean
+multi_turn: true
+timeout_sec: 600
+curated_skill: dev-team
+description: |
+  THROWAWAY SMOKE TEST for the multi-turn execution mode — NOT a real suite task.
+  The `_` prefix makes find_tasks() (and run.sh discovery) skip it automatically.
+
+  Purpose: prove the multi-turn path runs end to end — stream-json capture,
+  transcript normalization, the git-repo'd workspace, per-task timeout, and the
+  skill-activation instrumentation (curated_skill is set so detect_skill_fired is
+  exercised; the smoke prompt does NOT invoke dev-team, so skill_fired records
+  False, which is itself the routing-failure signal we want to be able to record).

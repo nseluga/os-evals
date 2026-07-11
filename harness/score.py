@@ -112,8 +112,44 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
 
     stats = extract_stats(transcript)
     workspace_dir = meta.get("workspace_dir", "")
-    passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
     task_meta = read_task_meta(tasks_dir, task)
+
+    # Skill-activation instrumentation (multi-turn runs). skill_fired is:
+    #   True  — the intended skill actually fired
+    #   False — a ROUTING failure: the skill never triggered, so this run is NOT
+    #           evidence about the skill's value (must be distinguishable, not silently
+    #           counted as a skill failure)
+    #   None  — not applicable (one-shot task, or no intended skill to check)
+    skill_fired = meta.get("skill_fired")
+    multi_turn = meta.get("multi_turn", False)
+    timed_out = meta.get("timed_out", False)
+
+    # OAuth-expiry / auth failure detected mid-run is infra, not a task failure. Map it
+    # to the check_rc==2 (unscoreable) convention WITHOUT running check.sh — a token that
+    # died mid-run tells us nothing about the task.
+    if meta.get("auth_error"):
+        return {
+            "file": run_file.name,
+            "task": task,
+            "rung": rung,
+            "model": model,
+            "passed": False,
+            "check_rc": 2,
+            "infra_error": True,
+            "check_output": "auth/OAuth error detected mid-run (see _meta.stderr)",
+            "result_snippet": transcript.get("result", "")[:200],
+            "curated_skill": task_meta["curated_skill"],
+            "category": task_meta["category"],
+            "contaminated": task_meta["contaminated"],
+            "group": task_meta["group"],
+            "wall_clock_sec": meta.get("elapsed_sec", 0),
+            "multi_turn": multi_turn,
+            "timed_out": timed_out,
+            "skill_fired": skill_fired,
+            **stats,
+        }
+
+    passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
 
     return {
         "file": run_file.name,
@@ -130,6 +166,9 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "contaminated": task_meta["contaminated"],
         "group": task_meta["group"],
         "wall_clock_sec": meta.get("elapsed_sec", 0),
+        "multi_turn": multi_turn,
+        "timed_out": timed_out,
+        "skill_fired": skill_fired,
         **stats,
     }
 

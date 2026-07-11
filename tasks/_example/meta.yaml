@@ -1,6 +1,17 @@
 category: coding
 contaminated: false
 group: clean
+
+# --- Optional fields (defaults keep one-shot behavior) ---
+# curated_skill: dev-team    # the rung-4 skill this task is meant to exercise; run_matrix
+#                            # detects whether it actually fired (_meta.skill_fired) so a
+#                            # routing failure is distinguishable from a skill failure.
+# multi_turn: true           # capture the full stream-json event trace, give the run a real
+#                            # git repo (so dev-team-auto can branch/worktree), and detect
+#                            # skill activation. Default false = one-shot single-JSON path.
+# timeout_sec: 1800          # per-task wall-clock budget. Default 300. Multi-turn dev-team
+#                            # tasks need this well above 300 (they run many minutes).
+
 description: |
   Example task demonstrating the contract. Replace with real task metadata.
 
