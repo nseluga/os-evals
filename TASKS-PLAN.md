@@ -44,18 +44,26 @@ tasks — see below.
 | `coding/apply-review-fixes` | `dt-fix` | Seed handler.py + REVIEW.md (hardcoded secret, eval(), no timeout); check all three fixes applied + behavior preserved. | ✅ |
 | `coding/dashboard-a11y` | `dt-ui` | Seed index.html with a11y violations; check via stdlib HTML parser (alt text, control names, labels, real click targets). | ✅ |
 
+## Coding batch — hard tasks (iteration 2, promoted from `_draft`)
+
+| Task | Curated skill | What it probes | Status |
+|------|---------------|----------------|--------|
+| `coding/pathguard-resolver` | `dev-team` | Multi-file untrusted-path resolver; security attack battery (traversal, absolute/NUL, symlink escape, sibling-prefix bypass, no shell-out) + correctness. Naive `join`+`normpath`+`startswith` fails the two subtle escapes. `multi_turn`, `timeout_sec: 1200`. | ✅ authored + re-validated post-promote |
+| `coding/rangestats-engine` | `dev-team-auto` | PLAN.md-driven online `LiveStats`; perf (200k interleaved ops <15s) + scalability (4× ratio <8). O(N)-per-query rescan times out; dual Fenwick tree passes. `multi_turn`, `timeout_sec: 1800`. | ✅ authored + re-validated post-promote |
+
 ## Coverage
 
-**9 of 10 curated skills now have a validated task:** `baseball-research-advisor` (×2),
-`dt-engineer`, `dev-team`, `dt-analyze`, `dt-review`, `ai-usage-optimizer`, `dt-qa`,
-`dt-fix`, `dt-ui`.
+**All 10 curated skills now have a validated task:** `baseball-research-advisor` (×2),
+`dt-engineer`, `dev-team` (×2, incl. `pathguard-resolver`), `dt-analyze`, `dt-review`,
+`ai-usage-optimizer`, `dt-qa`, `dt-fix`, `dt-ui`, and now `dev-team-auto` via
+`rangestats-engine`.
 
-**Not covered — `dev-team-auto` (deferred, with reason):** it orchestrates multiple
-sub-agent convergence loops across a whole PLAN.md and spawns worktrees — minutes-to-hours
-of unattended work. A headless `claude -p` one-shot with a 300s timeout cannot exercise it
-faithfully, and a shrunk "2-item PLAN" would test a stub, not the skill. Authoring it well
-needs a different harness mode (long-running, worktree-aware) — out of scope for the
-one-shot matrix. Flagged here rather than faked.
+**`dev-team-auto` — now covered (was deferred).** The earlier concern was that a headless
+`claude -p` one-shot with a 300s timeout couldn't exercise a full PLAN.md convergence run.
+`rangestats-engine` addresses this via the multi-turn path (`multi_turn: true`,
+`timeout_sec: 1800`): a real git-repo'd workspace, a 3-item PLAN.md ending in the
+`⚠️ AUTONOMOUS RUN — STOP HERE` marker, and a perf/scalability gate that only a genuine
+sub-linear design (reached through the QA+review loop) can pass.
 
 Category balance ended at coding=5, analysis=4, writing=3 (12 total) — a mild deviation
 from the 4/4/4 ideal, driven by which curated skills are coding- vs. text-shaped. The

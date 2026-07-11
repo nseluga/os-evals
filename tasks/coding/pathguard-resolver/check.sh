@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-# check.sh — pathguard-resolver (coding, clean)  [DRAFT — under tasks/_draft, auto-excluded]
+# check.sh — pathguard-resolver (coding, clean)
 #
 # Gate: run the vendored security+correctness battery (test_pathguard.py) against the
 # src/pathguard package the model wrote in WORKSPACE_DIR. Pure stdlib python; no server,

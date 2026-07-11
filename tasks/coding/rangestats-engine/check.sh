@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-# check.sh — rangestats-engine (coding, clean)  [DRAFT — under tasks/_draft, auto-excluded]
+# check.sh — rangestats-engine (coding, clean)
 #
 # Gate: run the vendored correctness + performance + scalability battery
 # (test_rangestats.py) against the src/rangestats package the model wrote in
