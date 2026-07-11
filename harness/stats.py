@@ -209,6 +209,92 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
     return lines
 
 
+def _find_model(scores: list[dict], needle: str) -> str:
+    """First model id containing `needle` (e.g. 'sonnet', 'opus'), else ''."""
+    for m in sorted({s.get("model", "") for s in scores}):
+        if needle in m.lower():
+            return m
+    return ""
+
+
+def _cell_pass(scores: list[dict], model: str, rung: int) -> dict[str, bool]:
+    """task -> passed, for one (model, rung) cell."""
+    return {
+        s["task"]: bool(s["passed"])
+        for s in scores
+        if s.get("model", "") == model and s["rung"] == rung
+    }
+
+
+def cross_model_section(scores: list[dict]) -> list[str]:
+    """Cross-model, cross-rung comparisons the per-model ladders can't show.
+
+    Headline question: can a cheaper model with the scaffolding reach what a stronger
+    model reaches bare? Compares specific (model, rung) cells per task instead of
+    treating each model as an isolated ladder."""
+    sonnet = _find_model(scores, "sonnet")
+    opus = _find_model(scores, "opus")
+    lines: list[str] = ["## Cross-Model Comparison", ""]
+    if not (sonnet and opus):
+        lines += [
+            "_Skipped: need both a sonnet-tier and an opus-tier model in the run set "
+            f"(found sonnet={sonnet or 'none'}, opus={opus or 'none'})._",
+            "",
+        ]
+        return lines
+
+    # Comparisons: (label, boosted/cheaper cell A, reference cell B, note)
+    comparisons = [
+        ("Skill-boosted Sonnet (r4) vs bare Opus (r1)", (sonnet, 4), (opus, 1),
+         "Does the full scaffolding let Sonnet reach where bare Opus lands?"),
+        ("Full-setup Sonnet (r4) vs full-setup Opus (r4)", (sonnet, 4), (opus, 4),
+         "With the same scaffolding, how much raw model headroom remains?"),
+        ("Bare Sonnet (r1) vs bare Opus (r1)", (sonnet, 1), (opus, 1),
+         "Baseline model gap with no scaffolding on either side."),
+    ]
+
+    tasks = sorted({s["task"] for s in scores})
+    for label, (m_a, r_a), (m_b, r_b), note in comparisons:
+        a = _cell_pass(scores, m_a, r_a)   # boosted / cheaper side
+        b = _cell_pass(scores, m_b, r_b)   # reference side
+        shared = [t for t in tasks if t in a and t in b]
+        if not shared:
+            continue
+        lines += [f"### {label}", "", f"_{note}_", ""]
+        lines += ["| Task | boosted (A) | reference (B) | verdict |",
+                  "|------|-------------|---------------|---------|"]
+        a_ahead = b_ahead = both_pass = both_fail = 0
+        ref_passed = matched_ref = 0
+        for t in shared:
+            av, bv = a[t], b[t]
+            if bv:
+                ref_passed += 1
+                if av:
+                    matched_ref += 1
+            if av and bv:
+                verdict = "both pass"; both_pass += 1
+            elif av and not bv:
+                verdict = "**A ahead**"; a_ahead += 1
+            elif bv and not av:
+                verdict = "B ahead"; b_ahead += 1
+            else:
+                verdict = "both fail"; both_fail += 1
+            lines.append(f"| {t} | {'✓' if av else '✗'} | {'✓' if bv else '✗'} | {verdict} |")
+        n = len(shared)
+        a_pass = both_pass + a_ahead
+        b_pass = both_pass + b_ahead
+        reach = "matches or beats" if matched_ref == ref_passed else "falls short of"
+        lines += [
+            "",
+            f"- A (boosted) passed **{a_pass}/{n}**; B (reference) passed **{b_pass}/{n}**.",
+            f"- Of the **{ref_passed}** tasks B passed, A also passed **{matched_ref}** "
+            f"→ boosted side {reach} the reference on its own passes.",
+            f"- A ahead on {a_ahead}, B ahead on {b_ahead}, both pass {both_pass}, both fail {both_fail}.",
+            "",
+        ]
+    return lines
+
+
 def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
     lines = ["# Eval Scorecard", ""]
     os_sha = data.get("os_sha", "unknown")
@@ -256,6 +342,8 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
             lines.append("")
 
     lines += verdict_section(data, data["scores"])
+
+    lines += cross_model_section(data["scores"])
 
     lines += ["## Per-Run Results", ""]
     lines += ["| Task | Rung | Pass | Tokens | Cost |", "|------|------|------|--------|------|"]

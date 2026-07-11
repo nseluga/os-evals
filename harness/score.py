@@ -129,6 +129,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "category": task_meta["category"],
         "contaminated": task_meta["contaminated"],
         "group": task_meta["group"],
+        "wall_clock_sec": meta.get("elapsed_sec", 0),
         **stats,
     }
 

@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -171,6 +172,7 @@ def run_one(
     with open(prompt_file) as f:
         prompt_text = f.read()
 
+    _t0 = time.monotonic()
     result = subprocess.run(
         cmd,
         input=prompt_text,
@@ -180,6 +182,7 @@ def run_one(
         cwd=cwd,
         timeout=300,
     )
+    elapsed_sec = round(time.monotonic() - _t0, 1)
 
     # Parse and enrich transcript
     try:
@@ -201,6 +204,7 @@ def run_one(
         "stderr": result.stderr[:2000] if result.stderr else "",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "workspace_dir": str(ws_dir) if ws_dir else "",
+        "elapsed_sec": elapsed_sec,
     }
 
     out_file = runs_dir / f"{run_id}.json"

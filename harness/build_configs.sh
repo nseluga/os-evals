@@ -125,14 +125,22 @@ echo "build_configs.sh: rung3 done (CLAUDE.md + memory)"
 # OAuth isn't needed). CLAUDE.md + memory are kept exactly as the full setup has
 # them; the ONLY narrowing vs. the real ~/.claude is the skill list.
 #
-# CURATED_SKILLS: the skills Nate actually reaches for. Rung 4 measures whether
-# THESE earn their keep — so rung-4 deltas attribute to specific skills, not the
-# whole catalog. Keep in sync with the task->skill map in SPEC.md.
+# CURATED_SKILLS: rung 4 tests ONLY the dev-team orchestration skills. These are the
+# skills whose value is objective (ship hard, complex work quickly and with quality —
+# runtime, scalability, security), which is what this eval can actually measure. The
+# other curated skills were dropped because their value is subjective/quality-of-judgment
+# and pass/fail can't score it. Keep in sync with the task->skill map in SPEC.md.
+#
+# UNDER TEST (attribution): dev-team, dev-team-auto — the two orchestrators.
+# REQUIRED MACHINERY: dt-analyze/dt-engineer/dt-qa/dt-review/dt-fix/dt-ui — the
+#   specialists the orchestrators invoke as skills/agents (verified: both SKILL.md
+#   files reference them). They MUST be present or the orchestrator can't run and a
+#   failure would be wrongly attributed to it. They are not separately attributed.
+# DROPPED vs the old catalog: ai-usage-optimizer, baseball-research-advisor — their
+#   value is subjective judgment quality, which pass/fail can't score.
 CURATED_SKILLS=(
-    ai-usage-optimizer
     dev-team
     dev-team-auto
-    baseball-research-advisor
     dt-analyze
     dt-engineer
     dt-qa
