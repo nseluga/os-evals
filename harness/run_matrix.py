@@ -116,6 +116,13 @@ def read_task_meta(task_dir: Path) -> dict:
     if not meta_file.exists():
         return out
     for line in meta_file.read_text().splitlines():
+        # Only genuine top-level scalar keys sit at column 0. Anything indented is
+        # inside a block (e.g. the description: literal block, or a wrapped plain
+        # scalar), so prose like "  multi_turn: git-repo'd ..." can't shadow the
+        # real key. In YAML a block scalar's content must be indented past its key,
+        # so a column-0 "key: value" is always a top-level field.
+        if line[:1] in (" ", "\t"):
+            continue
         s = line.strip()
         if s.startswith("timeout_sec:"):
             val = s.split(":", 1)[1].split("#", 1)[0].strip()
