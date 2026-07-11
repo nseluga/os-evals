@@ -1,0 +1,43 @@
+category: coding
+contaminated: false
+group: clean
+curated_skill: dev-team
+multi_turn: true
+timeout_sec: 1200
+source: authored for the hard-task batch (iteration 2). Not from Nate's real repos —
+  path-traversal defense is general CS, not recorded in ~/os project READMEs/library notes.
+description: |
+  HARD multi-step, multi-file security task mapped to `dev-team`.
+
+  Build a `pathguard` package (src/pathguard/errors.py + resolver.py) that resolves an
+  UNTRUSTED client path inside a fixed base dir and refuses every escape. Multi-file,
+  subtle correctness, a real QA loop — the shape dev-team is built for (Engineer builds,
+  QA gates with the attack battery, Optimization Reviewer flags the containment logic,
+  Bug Fixer applies findings).
+
+  QUALITY DIMENSION: security — the check is an attack battery (traversal, absolute-path,
+  NUL byte, symlink escape, sibling-prefix bypass) + a source grep for shell-out/eval,
+  on top of functional correctness (normal paths resolve, non-existent files allowed,
+  ""/"."/"./" -> base).
+
+  WHY HARD ENOUGH TO FAIL BARE CLAUDE: the naive solution (os.path.join + normpath +
+  str.startswith(base)) passes the happy path and simple `../` cases but is bypassable
+  two ways the check specifically probes: (1) a symlink component inside base pointing
+  out (normpath doesn't follow links — you need realpath), and (2) the sibling-prefix
+  bypass where base=/x/data and target=/x/data-evil satisfies startswith. Getting both
+  right requires os.path.realpath + os.path.commonpath, plus splitting validation vs
+  security exceptions — non-obvious in one shot.
+
+  CONTAMINATION: false / clean. Nothing here lives in ~/os. Solvable from the prompt alone
+  by any capable model; the eval measures whether dev-team's QA loop reaches the correct
+  containment logic more reliably than a bare one-shot.
+
+  Frozen workspace: seed/ ships src/pathguard/__init__.py + README only; resolver.py and
+  errors.py are ABSENT — the model must create them. No external deps (stdlib), so no
+  setup.sh / npm / venv. multi_turn: git-repo'd workspace so dev-team can branch.
+
+  Check type: vendored test_pathguard.py run under python3 against WORKSPACE_DIR.
+
+  VALIDATED (two-sided): reference GOOD solution (realpath + commonpath) -> exit 0;
+  reference BAD solution (join + startswith) -> exit 1 on symlink + sibling-prefix. See
+  tasks/_draft/REVIEW.md for the commands + captured output.

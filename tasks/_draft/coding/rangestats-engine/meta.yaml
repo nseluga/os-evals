@@ -1,0 +1,43 @@
+category: coding
+contaminated: false
+group: clean
+curated_skill: dev-team-auto
+multi_turn: true
+timeout_sec: 1800
+source: authored for the hard-task batch (iteration 2). Not from Nate's real repos —
+  Fenwick-tree / order-statistics over a bounded integer domain is general CS, not in
+  ~/os project READMEs or library notes.
+description: |
+  HARD multi-turn, PLAN.md-driven task mapped to `dev-team-auto`.
+
+  Build an online, interleaved score-stream engine `LiveStats` (record / count_below /
+  sum_below) whose ops must be sub-linear in the number of recorded scores. The seed ships
+  a PLAN.md (Items 1-3, with a `⚠️ AUTONOMOUS RUN — STOP HERE` marker) that dev-team-auto
+  reads top to bottom and drives to completion, updating PROGRESS.md per item.
+
+  QUALITY DIMENSIONS: performance + scalability. The check runs a large interleaved
+  workload (200k ops) under a SIGALRM time budget (15s) and asserts a 4x-size elapsed
+  ratio < 8 (sub-quadratic). An O(N)-per-query rescan collapses to O(N^2), is interrupted
+  by the alarm, and fails. Plus functional correctness vs a brute-force oracle and input
+  validation (rejects non-int/bool/out-of-range).
+
+  WHY HARD ENOUGH TO FAIL BARE CLAUDE: because records and queries INTERLEAVE (online),
+  you cannot batch/pre-sort, and the tempting solutions all blow the bound —
+  list + per-query scan is O(N) per query; `bisect.insort` into a sorted list is O(N) per
+  insert (list shift); numpy `(arr<q).sum()` is O(N) per query and can't be batched online.
+  The intended solution is a Fenwick/BIT keyed on the value domain (two parallel trees for
+  count and sum) — O(log domain) per op. A bare one-shot frequently ships the O(N) rescan
+  and times out under load. dev-team-auto's QA+review loop is designed to catch exactly the
+  "passes on small input, dies on large" failure mode.
+
+  CONTAMINATION: false / clean. Nothing here lives in ~/os; the algorithm is standard CS.
+
+  Frozen workspace: seed/ ships PLAN.md, PROGRESS.md, src/rangestats/__init__.py;
+  live_stats.py is ABSENT — the model must create it. Stdlib only, so no setup.sh/venv.
+  multi_turn: git-repo'd workspace so dev-team-auto can run on an experimental branch.
+
+  Check type: vendored test_rangestats.py under python3 against WORKSPACE_DIR.
+
+  VALIDATED (two-sided): reference GOOD solution (dual Fenwick tree) -> exit 0; reference
+  BAD solution (list + per-query scan) -> exit 1 (perf alarm fires, scalability ratio
+  fails). See tasks/_draft/REVIEW.md for commands + captured output.
