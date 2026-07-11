@@ -1,0 +1,26 @@
+category: coding
+contaminated: false
+group: clean
+curated_skill: dt-ui
+source: authored fixture (self-contained static HTML with a11y violations)
+description: |
+  Exercises dt-ui (UI Specialist): fix concrete accessibility defects in a component.
+  Self-contained static HTML seeded into the workspace; no build toolchain (headless
+  Astro rendering is fragile — a static file parsed with the stdlib is robust and just
+  as objective).
+
+  contaminated: false. group: clean — standard WCAG fixes, no ~/os knowledge involved.
+
+  Planted violations -> required fixes:
+    1. <img> with no alt              -> non-empty alt on every image.
+    2. icon-only <button> (svg only)  -> accessible name (aria-label/aria-labelledby/
+                                         title, or visible text).
+    3. <input type=text> with no label-> aria-label OR a <label for> tied to the input.
+    4. <div onclick> acting as a button -> a real control: converted to <button>/<a>,
+                                         or given role + tabindex. No clickable bare div.
+
+  Check type: parse the resulting index.html with Python's stdlib html.parser and assert
+  all four. Uses seed/ + WORKSPACE_DIR; no setup.sh.
+
+  STATUS: VALIDATED locally — a properly remediated header passes; the seed (and any
+  partial fix) fails.

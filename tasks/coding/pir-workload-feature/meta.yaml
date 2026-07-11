@@ -1,0 +1,36 @@
+category: coding
+contaminated: true
+group: knowledge-informed
+source: git-derived (PIR session history is thin — only 1 retained session). Task reconstructs
+        the real commit cf84a6b "notebook 5 draft" which introduced acwr_7_28 in
+        src/features/workload_features.py. NOT sourced from a session prompt — flagged.
+description: |
+  Real work: add the acute:chronic workload ratio (ACWR) injury-spike feature to the
+  Pitcher Injury Risk+ workload pipeline. This is the deliberate CONTAMINATED /
+  knowledge-informed representative for the coding batch.
+
+  contaminated: true. group: knowledge-informed.
+  Why knowledge-informed: getting ACWR right depends on baseball sports-science domain
+  knowledge (ratio is acute÷chronic, must EXCLUDE the current appearance to avoid leakage,
+  7/28-day windows) that the baseball-research skill (rung 4) and the PIR module/README
+  supply. A bare Claude may invert the ratio, include the current game (leakage), or pick
+  arbitrary windows.
+
+  Why contaminated: the exact conventions (7/28 windows, current-game exclusion via
+  closed='left', safe-division clamp) are recorded in the module docstring and the
+  project's own code. The frozen base (cf84a6b^) is chosen to be BEFORE ACWR was added,
+  but the surrounding rolling-window helpers (which encode the closed='left' convention)
+  are present at that base — so a model reading the workspace can discover the convention
+  without ~/os. That is what keeps rungs comparable; the ~/os advantage is only the
+  domain-semantics knowledge, not the repo convention.
+
+  Frozen workspace: PIR @ cf84a6b^ (parent of the commit that introduced acwr_7_28).
+
+  Check type: property-based unit test (self-contained synthetic input, no Statcast data).
+  Asserts DOMAIN-CORRECT behavior — ratio direction, steady-state ≈ 1, spike > 1, and
+  current-game exclusion — NOT Nate's idiosyncratic 28÷4 rounding. Requires a Python env
+  with pandas/numpy (PIR requirements.txt) and the WORKSPACE_DIR contract extension.
+
+  STATUS: NEEDS-VALIDATION + HIGH SETUP-FLATTERING SCRUTINY. See CONTRACT-NOTE.md audit
+  section. Confirm the check passes on the real cf84a6b implementation and fails on a
+  plausibly-wrong (inverted / leaky) implementation before trusting it.

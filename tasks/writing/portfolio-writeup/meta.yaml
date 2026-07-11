@@ -1,0 +1,31 @@
+category: writing
+contaminated: true
+group: knowledge-informed
+curated_skill: none (tests CLAUDE.md knowledge-routing + memory style preference)
+source: authored fixture; the gradable axis is Nate's portfolio style (memory + library ref)
+description: |
+  A rung 2/3 task on purpose: it measures whether the KNOWLEDGE and MEMORY layers earn
+  their keep for writing, not a skill. The ~/os advantage is the portfolio style: memory
+  'reference-portfolio-style-guide' + the library style_reference say specific,
+  evidence-driven voice, NO marketing language. Rung 1 (bare) has none of that and tends
+  to produce generic marketing fluff.
+
+  contaminated: true. group: knowledge-informed — the style rule lives in ~/os. Minimal
+  project context is inlined so every rung can write SOMETHING; only STYLE is graded.
+
+  Check type (objective proxy for the style guide):
+    - Length in ~120-320 words (a short writeup, not an essay).
+    - NO marketing/fluff buzzwords from a blacklist (cutting-edge, revolutionary,
+      seamless, leverage, passionate, game-changing, state-of-the-art, world-class,
+      synergy, unlock, elevate, supercharge, robust solution, powerful).
+    - Contains concrete specifics: >=2 of the anchors the prompt gives (acute:chronic /
+      ACWR, rolling window, time-based split / leakage, biomechanics, workload, feature
+      pipeline) OR a numeric detail — evidence-driven, not vague.
+  PASS iff length ok AND no blacklisted buzzword AND >=2 concrete specifics.
+
+  NOTE: softer than the code checks — a lucky bare answer can pass. Reported as a
+  MODERATE-confidence check; its rung2/3 delta is the signal of interest, not its
+  absolute pass rate.
+
+  STATUS: VALIDATED locally — a specific, buzzword-free writeup passes; a generic
+  marketing blurb fails on the blacklist.

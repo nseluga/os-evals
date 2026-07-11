@@ -1,0 +1,25 @@
+category: coding
+contaminated: false
+group: clean
+curated_skill: dt-fix
+source: authored fixture (self-contained; review report + flawed code)
+description: |
+  Exercises dt-fix (Bug Fixer): given a review report and the code it critiques, apply
+  ALL the cited fixes while preserving behavior. Seeded workspace (handler.py + REVIEW.md);
+  the model edits handler.py in place.
+
+  contaminated: false. group: clean — the fixes are dictated by REVIEW.md, not by ~/os.
+  The skill's value is reliably applying every finding, not just one.
+
+  Three findings, each objectively checkable after the fix:
+    1. Hardcoded secret removed -> reads token from os.environ (literal 'sk-live' gone).
+    2. eval() removed -> safe parse (no 'eval(' remains).
+    3. requests.get given a timeout= argument.
+  Plus a behavior guard: handler.py must still parse as valid Python and keep both
+  function names.
+
+  Check type: filesystem assertion on the edited handler.py via WORKSPACE_DIR. PASS iff
+  all three fixes applied AND the file still defines parse_payload and fetch and parses.
+
+  STATUS: VALIDATED locally — a fully-fixed handler.py passes; a partial fix (any finding
+  left) fails.

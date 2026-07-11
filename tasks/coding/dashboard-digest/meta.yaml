@@ -1,0 +1,24 @@
+category: coding
+contaminated: false
+group: clean
+source: project-dashboard PLAN.md Item 3.1 (built via /dev-team-auto session 51c6abdf, 2026-07-08)
+description: |
+  Real task: implement Item 3.1 "Weekly digest section" of the project-dashboard —
+  a spec Nate wrote in PLAN.md and shipped via dev-team-auto (commit b89cf7f). Gold-
+  standard check type: the repo's OWN unit test is the pass/fail gate.
+
+  Contaminated: false. group: clean.
+  Rationale: the check is a PURE unit test (tests/digest.test.ts on computeDigestBuckets)
+  with explicit boundary cases (<=7 vs 8 days, overdue exclusion, missing due_date). It
+  rewards a correct implementation, not knowledge of ~/os. No live server needed
+  (unlike the inbox test, which is why this item was chosen over 3.2).
+
+  Frozen workspace: project-dashboard @ 185eda8 (parent of feature commit b89cf7f).
+  At this base, src/types/project.ts already defines MergedProject and getMergedProjects
+  exists; src/lib/digest.ts is ABSENT — the model must create it.
+
+  Check type: run the vendored tests/digest.test.ts under vitest against WORKSPACE_DIR.
+  Requires the WORKSPACE_DIR extension + `npm ci` (via setup.sh).
+
+  STATUS: VALIDATED — real digest.ts (from 5a4c800) passes the vendored test; a broken
+  bucket rule fails it. (See validation notes.)

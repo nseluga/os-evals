@@ -1,0 +1,21 @@
+category: coding
+contaminated: false
+group: clean
+source_session: 7dd5bc6c  # ~/.claude/projects/-Users-nateseluga-project-dashboard/7dd5bc6c-*.jsonl (2026-07-09)
+description: |
+  Real task: create a launchd background service for the project-dashboard Astro
+  app so localhost:4321 is always available. Self-contained macOS/ops task —
+  produces a launchd plist plus install/uninstall scripts.
+
+  Contaminated: false. group: clean.
+  Rationale: the solution (the plist + scripts) requires no facts from ~/os,
+  no library note, and no project-specific convention. `grep -rniE 'launchd|plist'`
+  over the project's *.md docs returns nothing, so the conclusion is NOT recorded
+  anywhere in the setup. A bare Claude with only the prompt has everything it needs.
+
+  Frozen workspace: project-dashboard @ dd656f3 (HEAD on 2026-07-08 20:26, the state
+  immediately before the 2026-07-09 session). See workspace.ref.
+
+  Check type: filesystem assertions against WORKSPACE_DIR (plist is valid XML with
+  the required keys; scripts exist, are executable, and use launchctl load/unload).
+  Requires the workspace-restore contract extension — see CONTRACT-NOTE.md.

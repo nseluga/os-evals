@@ -1,0 +1,22 @@
+# Workspace Reference — dashboard-digest
+
+## Git SHA reference
+```
+repo: project-dashboard
+origin: /Users/nateseluga/project-dashboard
+sha: 185eda8          # parent of feature commit b89cf7f "feat: implement Item 3.1 weekly digest"
+solution_sha: 5a4c800 # digest.ts final-good state (for validation dry-runs)
+```
+
+At base 185eda8: `src/types/project.ts` defines `MergedProject` and `getMergedProjects()`
+exists; `src/lib/digest.ts` is absent (this is what the model must create).
+
+## Tarball fallback
+```
+build: git -C ~/project-dashboard archive --format=tar.gz -o <path> 185eda8
+```
+
+## Restore contract (see CONTRACT-NOTE.md)
+Needs the JS toolchain: restore 185eda8, then `npm ci` (setup.sh) so vitest is available.
+node_modules is not in the git archive. The digest test is a pure unit test — no dev
+server required.

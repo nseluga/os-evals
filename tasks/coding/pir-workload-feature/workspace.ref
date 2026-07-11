@@ -1,0 +1,27 @@
+# Workspace Reference — pir-workload-feature
+
+## Git SHA reference
+```
+repo: Pitcher-Injury-Risk
+origin: /Users/nateseluga/Pitcher-Injury-Risk
+sha: cf84a6b^        # parent of "notebook 5 draft" (cf84a6b), which introduced acwr_7_28
+solution_sha: cf84a6b  # the real implementation, for the NEEDS-VALIDATION dry-run
+```
+Resolve the base SHA: `git -C ~/Pitcher-Injury-Risk rev-parse cf84a6b^`
+
+At base cf84a6b^: src/features/workload_features.py exists with the rolling-window
+helpers and their closed='left' convention, but WITHOUT the acwr_7_28 column.
+
+## Tarball fallback
+```
+build: git -C ~/Pitcher-Injury-Risk archive --format=tar.gz -o <path> <base-sha>
+```
+
+## Restore contract (proposed — see CONTRACT-NOTE.md)
+Needs a Python venv with pandas + numpy (from PIR requirements.txt). The check uses
+tiny synthetic input, so committed Statcast parquet data is NOT required.
+  1. Materialize base into a temp dir.
+  2. python -m venv + pip install pandas numpy  (or a cached venv).
+  3. Run `claude -p` with that dir as cwd.
+  4. Pass dir to check.sh as WORKSPACE_DIR; check runs the property-based test against
+     src/features/workload_features.py.

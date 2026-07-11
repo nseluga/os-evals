@@ -1,0 +1,26 @@
+category: analysis
+contaminated: false
+group: clean
+curated_skill: dt-review
+source: authored fixture (self-contained; no ~/os facts required)
+description: |
+  Exercises the dt-review Optimization Reviewer job: given code with planted flaws,
+  produce a review that NAMES the real issues (efficiency, scalability, security).
+
+  contaminated: false. group: clean. The flawed module is inline in the prompt — no
+  workspace, no ~/os knowledge needed. A bare Claude can in principle spot the flaws;
+  the eval measures whether the review skill makes the reviewer reliably catch the
+  serious ones (SQL injection especially).
+
+  Planted flaws:
+    1. SQL injection — query built via `% username` string formatting (SECURITY).
+    2. Hardcoded live API secret in source (SECURITY).
+    3. O(n*m) nested-loop join in enrich_users — should be a dict index (EFFICIENCY).
+
+  Check type: objective assertion on the final review text (stdin transcript .result).
+  PASS iff the review flags the SQL injection AND at least one of {hardcoded secret,
+  the quadratic/nested-loop inefficiency}. This rewards catching the critical issue
+  plus real thoroughness, not scaffold presence.
+
+  STATUS: VALIDATED locally — a real review naming injection+secret+perf passes; a
+  vacuous "looks fine" review fails.

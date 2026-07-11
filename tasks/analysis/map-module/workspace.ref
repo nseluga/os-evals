@@ -1,0 +1,23 @@
+# Workspace Reference — map-module (dt-analyze)
+
+## Git SHA reference
+```
+repo: project-dashboard
+origin: /Users/nateseluga/project-dashboard
+sha: 185eda8          # same frozen base as dashboard-digest; merge pipeline present
+```
+
+Read-only task: the model only inspects `src/lib/*` to build the map. No files are
+written and no toolchain is needed, so there is NO setup.sh (node_modules not required).
+
+At 185eda8 the pipeline is:
+  getMergedProjects()  [src/lib/merge.ts]   <- entry point
+    -> getProjects()   [src/lib/projects.ts]  reads ~/os/projects/*/README.md frontmatter
+    -> readManual()    [src/lib/manual.ts]    reads manual overrides + due_dates
+    -> merge: apply whitelisted overrides, compute due_date/overdue -> MergedProject[]
+  Concurrency seam: manual writes are guarded by manualMutex [src/lib/mutex.ts].
+
+## Tarball fallback
+```
+build: git -C ~/project-dashboard archive --format=tar.gz -o <path> 185eda8
+```

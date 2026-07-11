@@ -1,0 +1,33 @@
+category: analysis
+contaminated: true
+group: knowledge-informed
+curated_skill: ai-usage-optimizer
+source: authored fixture modeled on the ai-usage-optimizer skill's own job
+description: |
+  Exercises ai-usage-optimizer: given a snapshot of skills + memory + a usage log,
+  produce a correct audit (which subsystem is under-used) and a correct model
+  recommendation for a reasoning-heavy task.
+
+  contaminated: true. group: knowledge-informed — this is the deliberate
+  skill-reward task for the analysis batch (analogous to pir-workload-feature in
+  coding). Rung 4 has the ai-usage-optimizer skill, which is literally built to make
+  this call; lower rungs must reason it out from the inline data. The check still
+  rewards a CORRECT audit against an authored key (a bare Claude reasoning well can
+  pass), not the mere presence of the skill — but the ~/os advantage here is real and
+  expected. FLAGGED as such.
+
+  Answer key:
+    - Under-used subsystem: the dev-team / dt-* skills (invoked 0/20 despite 16/20
+      sessions being multi-file build/refactor/test work they exist for). The fix:
+      route that work through dev-team / dev-team-auto instead of ad-hoc chat.
+    - Model for a large multi-file reasoning refactor: Opus (a top-tier reasoning
+      model) — NOT Haiku. Memory says reasoning roles need Sonnet-or-better; a
+      cross-module refactor is the high end of that, so Opus. Sonnet is acceptable as
+      a floor; Haiku is wrong.
+
+  Check: PASS iff the audit names dev-team/dt-* as the under-used subsystem AND
+  recommends a top-tier reasoning model (opus, or at least sonnet) for the refactor
+  while NOT recommending haiku for it.
+
+  STATUS: VALIDATED locally — a correct audit passes; an audit that flags the wrong
+  subsystem or picks Haiku fails.
