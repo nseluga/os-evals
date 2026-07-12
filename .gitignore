@@ -2,3 +2,9 @@ configs/
 runs/
 __pycache__/
 *.pyc
+
+# Personal planning/progress/spec — local only, never on GitHub.
+# Root-anchored so eval-task fixtures (tasks/**/PLAN.md, PROGRESS.md) stay tracked.
+/PLAN.md
+/PROGRESS.md
+/SPEC.md
