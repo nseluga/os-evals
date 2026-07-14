@@ -156,6 +156,54 @@ def test_repeat_suffixed_filenames_marked():
         check(f"repeat suffix is_repeat_individual: {name}", result, True)
 
 
+# ---------------------------------------------------------------------------
+# Test 8: partial-group guard — no majority record when group is incomplete
+# ---------------------------------------------------------------------------
+
+def _compute_majority_records(groups: dict) -> list[dict]:
+    """Replicate the partial-group guard + majority-vote loop from score.py main()."""
+    majority_records = []
+    for (task, rung, model), group in groups.items():
+        n = len(group)
+        template = group[0]
+        declared_total = template.get("repeat_total") or n
+        # Do not emit majority until all expected repeats are present.
+        if n < declared_total:
+            continue
+        pass_count = sum(1 for r in group if r["passed"])
+        majority_passed = pass_count >= math.ceil(n / 2)
+        total_cost = sum(r.get("cost_usd") or 0 for r in group)
+        total_tokens = sum(r.get("total_tokens") or 0 for r in group)
+        majority_record = {
+            **template,
+            "file": f"[majority:{n}] " + re.sub(r"_r\d+\.json$", ".json", template["file"]),
+            "passed": majority_passed,
+            "cost_usd": total_cost,
+            "total_tokens": total_tokens,
+            "is_repeat_individual": False,
+            "repeat_majority": True,
+            "repeat_pass_count": pass_count,
+            "repeat_total": declared_total,
+            "repeat_index": None,
+            "check_output": f"{pass_count}/{n} passed",
+            "check_rc": 0 if majority_passed else 1,
+        }
+        majority_records.append(majority_record)
+    return majority_records
+
+
+def test_partial_group_no_majority_emitted():
+    """Test 8: 2 individual records with repeat_total=3 -> NO majority record emitted."""
+    # Only 2 of 3 expected repeats present; majority must not fire.
+    group = _make_repeat_records([True, False], task="writing/portfolio-writeup", rung=1)
+    # Ensure repeat_total reflects the declared total of 3, not the actual count of 2.
+    for r in group:
+        r["repeat_total"] = 3
+    key = ("writing/portfolio-writeup", 1, "claude-sonnet-4-6")
+    majority_records = _compute_majority_records({key: group})
+    check("partial group (2/3) majority records emitted", len(majority_records), 0)
+
+
 if __name__ == "__main__":
     print("=== test_repeat.py ===")
     test_portfolio_writeup_repeat()
@@ -165,4 +213,5 @@ if __name__ == "__main__":
     test_majority_vote_1_pass_2_fail()
     test_non_repeat_filename_not_marked()
     test_repeat_suffixed_filenames_marked()
+    test_partial_group_no_majority_emitted()
     print("ALL PASS")
