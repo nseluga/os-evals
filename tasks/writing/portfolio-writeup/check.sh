@@ -21,7 +21,7 @@ blacklist = [
     "cutting-edge", "cutting edge", "revolutionary", "seamless", "leverage",
     "passionate", "game-changing", "game changing", "state-of-the-art",
     "state of the art", "world-class", "world class", "synergy", "unlock",
-    "elevate", "supercharge", "robust solution", "powerful", "best-in-class",
+    "supercharge", "robust solution", "powerful", "best-in-class",
 ]
 hits = [b for b in blacklist if b in lc]
 no_buzz = not hits

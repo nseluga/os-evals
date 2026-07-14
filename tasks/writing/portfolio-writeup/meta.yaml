@@ -28,4 +28,4 @@ description: |
   absolute pass rate.
 
   STATUS: VALIDATED locally — a specific, buzzword-free writeup passes; a generic
-  marketing blurb fails on the blacklist.
+  marketing blurb fails on the blacklist. (2026-07-13: removed 'elevate' from blacklist — false positive on legitimate technical writing)
