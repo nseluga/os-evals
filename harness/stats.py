@@ -333,11 +333,15 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
         "They are excluded from pass/fail counts, sign-test, and cost tables above._"
     )
     lines.append("")
+    rung1_scores = [s for s in sentinel_scores if s["rung"] == 1]
+    if not rung1_scores:
+        lines.append("_no rung-1 data for this anchor_")
+        lines.append("")
+        return lines
+
     lines += ["| Task | Model | rung1 result | Tokens | Cost |",
               "|------|-------|-------------|--------|------|"]
-    for s in sorted(sentinel_scores, key=lambda x: (x["task"], x.get("model", ""))):
-        if s["rung"] != 1:
-            continue
+    for s in sorted(rung1_scores, key=lambda x: (x["task"], x.get("model", ""))):
         p = "✓" if s["passed"] else "✗"
         lines.append(
             f"| {s['task']} | {s.get('model', '—')} | {p} | "
@@ -353,7 +357,9 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
 
     lines = ["# Eval Scorecard", ""]
     os_sha = data.get("os_sha", "unknown")
-    lines += [f"os SHA: `{os_sha}`", f"runs: {data['run_count']}", ""]
+    n_anchors = len([s for s in all_scores if _is_sentinel(s)])
+    anchor_note = f" (+{n_anchors} anchors)" if n_anchors else ""
+    lines += [f"os SHA: `{os_sha}`", f"runs: {len(scored)}{anchor_note}", ""]
 
     lines += ["## Token & Cost Usage by Rung", ""]
     lines += ["| Rung | Avg tokens | Avg cost | Total cost | N runs |",
@@ -429,8 +435,9 @@ def main() -> int:
         print("stats.py: no scores to analyze", file=sys.stderr)
         return 1
 
-    stats = compute_stats(scores)
-    token_stats = token_summary(scores)
+    scored = [s for s in scores if not _is_sentinel(s)]
+    stats = compute_stats(scored)
+    token_stats = token_summary(scored)
     md = render_markdown(data, stats, token_stats)
     print(md)
     return 0

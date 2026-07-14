@@ -89,6 +89,8 @@ def read_task_meta(tasks_dir: Path, task: str) -> dict:
     if not meta_file.exists():
         return out
     for line in meta_file.read_text().splitlines():
+        if line[:1] in (" ", "\t"):
+            continue
         s = line.strip()
         for key in ("curated_skill", "category", "group"):
             if s.startswith(f"{key}:"):
