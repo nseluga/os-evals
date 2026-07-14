@@ -2,6 +2,7 @@ category: writing
 contaminated: true
 group: knowledge-informed
 curated_skill: none (tests CLAUDE.md knowledge-routing + memory style preference)
+repeat: 3
 source: authored fixture; the gradable axis is Nate's portfolio style (memory + library ref)
 description: |
   A rung 2/3 task on purpose: it measures whether the KNOWLEDGE and MEMORY layers earn

@@ -1,6 +1,8 @@
 category: coding
 contaminated: true
 group: knowledge-informed
+curated_skill: baseball-research
+repeat: 3
 source: git-derived (PIR session history is thin — only 1 retained session). Task reconstructs
         the real commit cf84a6b "notebook 5 draft" which introduced acwr_7_28 in
         src/features/workload_features.py. NOT sourced from a session prompt — flagged.

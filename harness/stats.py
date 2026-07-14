@@ -35,12 +35,25 @@ def _is_sentinel(s: dict) -> bool:
     return bool(s.get("sentinel", False))
 
 
+def _is_repeat_individual(s: dict) -> bool:
+    return bool(s.get("is_repeat_individual", False))
+
+
+def _effective_scores(scores: list[dict]) -> list[dict]:
+    """Return scores with individual repeat records replaced by their majority records.
+
+    Individual repeat records (is_repeat_individual=True) are excluded; majority-vote
+    records (repeat_majority=True) are included in their place. Non-repeat records pass
+    through unchanged."""
+    return [s for s in scores if not _is_repeat_individual(s)]
+
+
 def compute_stats(scores: list[dict]) -> dict:
     """Group scores by task+rung, compute per-rung-pair sign tests.
 
     Sentinel tasks are excluded — they only run at rung1 and serve as difficulty
     anchors, not as evidence about layer transitions."""
-    scored = [s for s in scores if not _is_sentinel(s)]
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
 
     by_task_rung: dict[tuple, dict] = {}
     for s in scored:
@@ -89,8 +102,8 @@ def compute_stats(scores: list[dict]) -> dict:
 
 
 def token_summary(scores: list[dict]) -> dict:
-    """Average tokens + cost by rung. Excludes sentinel tasks."""
-    scored = [s for s in scores if not _is_sentinel(s)]
+    """Average tokens + cost by rung. Excludes sentinel tasks and individual repeat records."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
     tok_by_rung: dict[int, list] = defaultdict(list)
     cost_by_rung: dict[int, list] = defaultdict(list)
     for s in scored:
@@ -116,19 +129,31 @@ LAYER_NAMES = {
 
 
 def _pass_map(scores: list[dict], model: str) -> dict[tuple, bool]:
-    """(task, rung) -> passed, for one model."""
+    """(task, rung) -> passed, for one model. Excludes individual repeat records."""
     return {
         (s["task"], s["rung"]): bool(s["passed"])
-        for s in scores
+        for s in _effective_scores(scores)
         if s.get("model", "") == model
     }
+
+
+def _repeat_annotation_map(scores: list[dict], model: str) -> dict[tuple, str]:
+    """(task, rung) -> annotation string like '(2/3)' for majority-vote records."""
+    result = {}
+    for s in scores:
+        if s.get("repeat_majority") and s.get("model", "") == model:
+            k = s.get("repeat_pass_count", 0)
+            n = s.get("repeat_total", 0)
+            result[(s["task"], s["rung"])] = f"({k}/{n})"
+    return result
 
 
 def verdict_section(data: dict, scores: list[dict]) -> list[str]:
     """Plain-English verdict: layer-transition wins, per-task rung matrix, per-skill lift.
 
-    Sentinel tasks are excluded from all pass-rate counts and sign-test analysis."""
-    scored = [s for s in scores if not _is_sentinel(s)]
+    Sentinel tasks are excluded from all pass-rate counts and sign-test analysis.
+    Individual repeat records are excluded; majority-vote records are used instead."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
     sentinel_count = len({s["task"] for s in scores if _is_sentinel(s)})
 
     lines: list[str] = ["## Verdict — does the setup earn its keep?", ""]
@@ -150,6 +175,7 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
 
     for model in models:
         pm = _pass_map(scored, model)
+        repeat_ann = _repeat_annotation_map(scores, model)
         rungs = sorted({r for (_, r) in pm.keys()})
         lines += [f"### Model: {model}", ""]
 
@@ -224,7 +250,13 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
         sep = "|------|-------|" + "|".join("---" for _ in rungs) + "|"
         lines += [header, sep]
         for t in tasks:
-            cells = " | ".join("✓" if pm.get((t, r)) else ("✗" if (t, r) in pm else "·") for r in rungs)
+            def _cell(t: str, r: int) -> str:
+                if (t, r) not in pm:
+                    return "·"
+                sym = "✓" if pm[(t, r)] else "✗"
+                ann = repeat_ann.get((t, r), "")
+                return f"{sym}{ann}" if ann else sym
+            cells = " | ".join(_cell(t, r) for r in rungs)
             lines.append(f"| {t} | {skill_of.get(t,'') or '—'} | {cells} |")
         lines.append("")
 
@@ -353,7 +385,7 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
 
 def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
     all_scores = data["scores"]
-    scored = [s for s in all_scores if not _is_sentinel(s)]
+    scored = [s for s in _effective_scores(all_scores) if not _is_sentinel(s)]
 
     lines = ["# Eval Scorecard", ""]
     os_sha = data.get("os_sha", "unknown")
@@ -435,7 +467,7 @@ def main() -> int:
         print("stats.py: no scores to analyze", file=sys.stderr)
         return 1
 
-    scored = [s for s in scores if not _is_sentinel(s)]
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
     stats = compute_stats(scored)
     token_stats = token_summary(scored)
     md = render_markdown(data, stats, token_stats)

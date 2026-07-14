@@ -20,7 +20,9 @@ Outputs:
 
 import argparse
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -132,6 +134,13 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     # to the check_rc==2 (unscoreable) convention WITHOUT running check.sh — a token that
     # died mid-run tells us nothing about the task.
     if meta.get("auth_error"):
+        repeat_index = meta.get("repeat_index")
+        repeat_total = meta.get("repeat_total")
+        if repeat_index is None:
+            m = re.search(r"_r(\d+)\.json$", run_file.name)
+            if m:
+                repeat_index = int(m.group(1))
+        is_repeat_individual = repeat_index is not None
         return {
             "file": run_file.name,
             "task": task,
@@ -151,10 +160,22 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
             "multi_turn": multi_turn,
             "timed_out": timed_out,
             "skill_fired": skill_fired,
+            "is_repeat_individual": is_repeat_individual,
+            "repeat_index": repeat_index,
+            "repeat_total": repeat_total,
             **stats,
         }
 
     passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
+
+    # Detect if this is a repeat run (either via _meta or filename suffix _r{N})
+    repeat_index = meta.get("repeat_index")
+    repeat_total = meta.get("repeat_total")
+    if repeat_index is None:
+        m = re.search(r"_r(\d+)\.json$", run_file.name)
+        if m:
+            repeat_index = int(m.group(1))
+    is_repeat_individual = repeat_index is not None
 
     return {
         "file": run_file.name,
@@ -175,6 +196,9 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "multi_turn": multi_turn,
         "timed_out": timed_out,
         "skill_fired": skill_fired,
+        "is_repeat_individual": is_repeat_individual,
+        "repeat_index": repeat_index,
+        "repeat_total": repeat_total,
         **stats,
     }
 
@@ -200,18 +224,57 @@ def main() -> int:
             record = score_run(f, tasks_dir)
             scores.append(record)
             status = "PASS" if record["passed"] else "FAIL"
+            repeat_tag = f" [r{record['repeat_index']}]" if record.get("repeat_index") else ""
             print(
-                f"  {status} rung{record['rung']} {record['task']} "
+                f"  {status}{repeat_tag} rung{record['rung']} {record['task']} "
                 f"({record['total_tokens']} tok, ${record['cost_usd']:.4f})",
                 file=sys.stderr,
             )
         except Exception as e:
             print(f"  ERROR scoring {f.name}: {e}", file=sys.stderr)
 
+    # Post-process: emit majority-vote synthetic records for repeated tasks.
+    # Group individual repeat records by (task, rung, model).
+    repeat_groups: dict[tuple, list[dict]] = {}
+    for rec in scores:
+        if rec.get("is_repeat_individual"):
+            key = (rec["task"], rec["rung"], rec.get("model", ""))
+            repeat_groups.setdefault(key, []).append(rec)
+
+    majority_records = []
+    for (task, rung, model), group in repeat_groups.items():
+        n = len(group)
+        pass_count = sum(1 for r in group if r["passed"])
+        majority_passed = pass_count >= math.ceil(n / 2)
+        total_cost = sum(r.get("cost_usd") or 0 for r in group)
+        total_tokens = sum(r.get("total_tokens") or 0 for r in group)
+        # Use the first record as a template for non-aggregated fields.
+        template = group[0]
+        majority_record = {
+            **template,
+            "file": f"[majority:{n}] " + re.sub(r"_r\d+\.json$", ".json", template["file"]),
+            "passed": majority_passed,
+            "cost_usd": total_cost,
+            "total_tokens": total_tokens,
+            "is_repeat_individual": False,
+            "repeat_majority": True,
+            "repeat_pass_count": pass_count,
+            "repeat_total": n,
+            "repeat_index": None,
+        }
+        majority_records.append(majority_record)
+        print(
+            f"  MAJORITY({'PASS' if majority_passed else 'FAIL'}) rung{rung} {task} "
+            f"({pass_count}/{n} passed, ${total_cost:.4f} total)",
+            file=sys.stderr,
+        )
+
+    all_scores = scores + majority_records
+
     output = {
         "os_sha": args.os_sha,
-        "run_count": len(scores),
-        "scores": scores,
+        "run_count": len(all_scores),
+        "scores": all_scores,
     }
     print(json.dumps(output, indent=2))
     return 0

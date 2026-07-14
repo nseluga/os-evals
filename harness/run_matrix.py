@@ -111,7 +111,7 @@ def read_task_meta(task_dir: Path) -> dict:
       curated_skill— the skill this task is meant to exercise; used to detect whether
                      that skill actually fired (routing check).
     """
-    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False}
+    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -136,6 +136,12 @@ def read_task_meta(task_dir: Path) -> dict:
             out["curated_skill"] = s.split(":", 1)[1].split("(")[0].split("#")[0].strip()
         elif s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("repeat:"):
+            val = s.split(":", 1)[1].split("#", 1)[0].strip()
+            try:
+                out["repeat"] = int(val)
+            except ValueError:
+                pass
     return out
 
 
@@ -306,6 +312,8 @@ def run_one(
     tasks_dir: Path,
     configs_dir: Path,
     runs_dir: Path,
+    repeat_index: int = 0,
+    repeat_total: int = 1,
 ) -> Path:
     """Run claude -p for one task/rung/model combo. Returns path to saved transcript."""
     task_dir = tasks_dir / task
@@ -335,7 +343,8 @@ def run_one(
     env = {**os.environ, **env_vars}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{ts}_{_slug(task)}_rung{rung}_{model.replace('-', '_')}"
+    base_run_id = f"{ts}_{_slug(task)}_rung{rung}_{model.replace('-', '_')}"
+    run_id = f"{base_run_id}_r{repeat_index}" if repeat_total > 1 else base_run_id
 
     # Every run gets its OWN isolated per-run dir as cwd. If the task ships a frozen
     # workspace (workspace.ref and/or seed/), it's restored there so files the model
@@ -417,6 +426,8 @@ def run_one(
         "skill_fired": skill_fired,
         "auth_error": auth_error,
         "num_events": len(events),
+        "repeat_index": repeat_index if repeat_total > 1 else None,
+        "repeat_total": repeat_total if repeat_total > 1 else None,
     }
 
     out_file = runs_dir / f"{run_id}.json"
@@ -462,13 +473,18 @@ def main() -> int:
         task_rungs = [r for r in rungs if r == 1 or not task_meta["sentinel"]]
         if task_meta["sentinel"] and len(task_rungs) < len(rungs):
             print(f"  sentinel: {task} — skipping rungs {[r for r in rungs if r != 1]}, running rung1 only")
+        repeat = task_meta.get("repeat", 1)
         for rung in task_rungs:
             for model in models:
-                try:
-                    run_one(task, rung, model, tasks_dir, configs_dir, runs_dir)
-                except Exception as e:
-                    print(f"  ERROR: {task}/rung{rung}/{model}: {e}", file=sys.stderr)
-                    failures += 1
+                for i in range(1, repeat + 1):
+                    try:
+                        run_one(
+                            task, rung, model, tasks_dir, configs_dir, runs_dir,
+                            repeat_index=i, repeat_total=repeat,
+                        )
+                    except Exception as e:
+                        print(f"  ERROR: {task}/rung{rung}/{model}/r{i}: {e}", file=sys.stderr)
+                        failures += 1
 
     print(f"run_matrix: done. failures={failures}")
     return 1 if failures > 0 else 0
