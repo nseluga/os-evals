@@ -111,7 +111,7 @@ def read_task_meta(task_dir: Path) -> dict:
       curated_skill— the skill this task is meant to exercise; used to detect whether
                      that skill actually fired (routing check).
     """
-    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": ""}
+    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -134,6 +134,8 @@ def read_task_meta(task_dir: Path) -> dict:
             out["multi_turn"] = s.split(":", 1)[1].strip().lower().startswith("true")
         elif s.startswith("curated_skill:"):
             out["curated_skill"] = s.split(":", 1)[1].split("(")[0].split("#")[0].strip()
+        elif s.startswith("sentinel:"):
+            out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
     return out
 
 
@@ -456,7 +458,11 @@ def main() -> int:
 
     failures = 0
     for task in tasks:
-        for rung in rungs:
+        task_meta = read_task_meta(tasks_dir / task)
+        task_rungs = [r for r in rungs if r == 1 or not task_meta["sentinel"]]
+        if task_meta["sentinel"] and len(task_rungs) < len(rungs):
+            print(f"  sentinel: {task} — skipping rungs {[r for r in rungs if r != 1]}, running rung1 only")
+        for rung in task_rungs:
             for model in models:
                 try:
                     run_one(task, rung, model, tasks_dir, configs_dir, runs_dir)

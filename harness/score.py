@@ -85,7 +85,7 @@ def run_check(
 def read_task_meta(tasks_dir: Path, task: str) -> dict:
     """Pull curated_skill + category from a task's meta.yaml (best-effort, no yaml dep)."""
     meta_file = tasks_dir / task / "meta.yaml"
-    out = {"curated_skill": "", "category": "", "contaminated": False, "group": ""}
+    out = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False}
     if not meta_file.exists():
         return out
     for line in meta_file.read_text().splitlines():
@@ -97,6 +97,8 @@ def read_task_meta(tasks_dir: Path, task: str) -> dict:
                 out[key] = val.split("(")[0].split("#")[0].strip()
         if s.startswith("contaminated:"):
             out["contaminated"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        if s.startswith("sentinel:"):
+            out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
     return out
 
 
@@ -142,6 +144,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
             "category": task_meta["category"],
             "contaminated": task_meta["contaminated"],
             "group": task_meta["group"],
+            "sentinel": task_meta["sentinel"],
             "wall_clock_sec": meta.get("elapsed_sec", 0),
             "multi_turn": multi_turn,
             "timed_out": timed_out,
@@ -165,6 +168,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "category": task_meta["category"],
         "contaminated": task_meta["contaminated"],
         "group": task_meta["group"],
+        "sentinel": task_meta["sentinel"],
         "wall_clock_sec": meta.get("elapsed_sec", 0),
         "multi_turn": multi_turn,
         "timed_out": timed_out,

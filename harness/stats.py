@@ -31,15 +31,24 @@ def sign_test(a_wins: int, b_wins: int, ties: int) -> str:
     return f"{b_wins}/{n} (ties={ties})"
 
 
+def _is_sentinel(s: dict) -> bool:
+    return bool(s.get("sentinel", False))
+
+
 def compute_stats(scores: list[dict]) -> dict:
-    """Group scores by task+rung, compute per-rung-pair sign tests."""
+    """Group scores by task+rung, compute per-rung-pair sign tests.
+
+    Sentinel tasks are excluded — they only run at rung1 and serve as difficulty
+    anchors, not as evidence about layer transitions."""
+    scored = [s for s in scores if not _is_sentinel(s)]
+
     by_task_rung: dict[tuple, dict] = {}
-    for s in scores:
+    for s in scored:
         key = (s["task"], s["rung"], s.get("model", ""))
         by_task_rung[key] = s
 
-    tasks = sorted({s["task"] for s in scores})
-    models = sorted({s.get("model", "") for s in scores})
+    tasks = sorted({s["task"] for s in scored})
+    models = sorted({s.get("model", "") for s in scored})
 
     results = {}
     for model in models:
@@ -80,10 +89,11 @@ def compute_stats(scores: list[dict]) -> dict:
 
 
 def token_summary(scores: list[dict]) -> dict:
-    """Average tokens + cost by rung."""
+    """Average tokens + cost by rung. Excludes sentinel tasks."""
+    scored = [s for s in scores if not _is_sentinel(s)]
     tok_by_rung: dict[int, list] = defaultdict(list)
     cost_by_rung: dict[int, list] = defaultdict(list)
-    for s in scores:
+    for s in scored:
         tok_by_rung[s["rung"]].append(s.get("total_tokens", 0))
         cost_by_rung[s["rung"]].append(s.get("cost_usd", 0) or 0)
     return {
@@ -115,19 +125,31 @@ def _pass_map(scores: list[dict], model: str) -> dict[tuple, bool]:
 
 
 def verdict_section(data: dict, scores: list[dict]) -> list[str]:
-    """Plain-English verdict: layer-transition wins, per-task rung matrix, per-skill lift."""
+    """Plain-English verdict: layer-transition wins, per-task rung matrix, per-skill lift.
+
+    Sentinel tasks are excluded from all pass-rate counts and sign-test analysis."""
+    scored = [s for s in scores if not _is_sentinel(s)]
+    sentinel_count = len({s["task"] for s in scores if _is_sentinel(s)})
+
     lines: list[str] = ["## Verdict — does the setup earn its keep?", ""]
-    models = sorted({s.get("model", "") for s in scores})
-    tasks = sorted({s["task"] for s in scores})
+    if sentinel_count:
+        lines.append(
+            f"_{sentinel_count} task(s) excluded as difficulty anchors "
+            f"(fail at every rung including Opus)._"
+        )
+        lines.append("")
+
+    models = sorted({s.get("model", "") for s in scored})
+    tasks = sorted({s["task"] for s in scored})
     # task -> curated_skill (first non-empty seen)
     skill_of = {}
     cat_of = {}
-    for s in scores:
+    for s in scored:
         skill_of.setdefault(s["task"], s.get("curated_skill", "") or "")
         cat_of.setdefault(s["task"], s.get("category", "") or "")
 
     for model in models:
-        pm = _pass_map(scores, model)
+        pm = _pass_map(scored, model)
         rungs = sorted({r for (_, r) in pm.keys()})
         lines += [f"### Model: {model}", ""]
 
@@ -231,9 +253,10 @@ def cross_model_section(scores: list[dict]) -> list[str]:
 
     Headline question: can a cheaper model with the scaffolding reach what a stronger
     model reaches bare? Compares specific (model, rung) cells per task instead of
-    treating each model as an isolated ladder."""
-    sonnet = _find_model(scores, "sonnet")
-    opus = _find_model(scores, "opus")
+    treating each model as an isolated ladder. Sentinel tasks are excluded."""
+    scored = [s for s in scores if not _is_sentinel(s)]
+    sonnet = _find_model(scored, "sonnet")
+    opus = _find_model(scored, "opus")
     lines: list[str] = ["## Cross-Model Comparison", ""]
     if not (sonnet and opus):
         lines += [
@@ -253,10 +276,10 @@ def cross_model_section(scores: list[dict]) -> list[str]:
          "Baseline model gap with no scaffolding on either side."),
     ]
 
-    tasks = sorted({s["task"] for s in scores})
+    tasks = sorted({s["task"] for s in scored})
     for label, (m_a, r_a), (m_b, r_b), note in comparisons:
-        a = _cell_pass(scores, m_a, r_a)   # boosted / cheaper side
-        b = _cell_pass(scores, m_b, r_b)   # reference side
+        a = _cell_pass(scored, m_a, r_a)   # boosted / cheaper side
+        b = _cell_pass(scored, m_b, r_b)   # reference side
         shared = [t for t in tasks if t in a and t in b]
         if not shared:
             continue
@@ -295,7 +318,39 @@ def cross_model_section(scores: list[dict]) -> list[str]:
     return lines
 
 
+def difficulty_anchors_section(scores: list[dict]) -> list[str]:
+    """Render a 'Difficulty Anchors' section for sentinel tasks (rung1 result only).
+
+    No layer attribution — sentinels are expected to fail at all rungs including Opus.
+    They serve as a calibration floor, not as scored suite members."""
+    sentinel_scores = [s for s in scores if _is_sentinel(s)]
+    if not sentinel_scores:
+        return []
+
+    lines: list[str] = ["## Difficulty Anchors", ""]
+    lines.append(
+        "_These tasks are expected to fail at every rung including Opus. "
+        "They are excluded from pass/fail counts, sign-test, and cost tables above._"
+    )
+    lines.append("")
+    lines += ["| Task | Model | rung1 result | Tokens | Cost |",
+              "|------|-------|-------------|--------|------|"]
+    for s in sorted(sentinel_scores, key=lambda x: (x["task"], x.get("model", ""))):
+        if s["rung"] != 1:
+            continue
+        p = "✓" if s["passed"] else "✗"
+        lines.append(
+            f"| {s['task']} | {s.get('model', '—')} | {p} | "
+            f"{s.get('total_tokens', 0):,} | ${s.get('cost_usd', 0):.4f} |"
+        )
+    lines.append("")
+    return lines
+
+
 def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
+    all_scores = data["scores"]
+    scored = [s for s in all_scores if not _is_sentinel(s)]
+
     lines = ["# Eval Scorecard", ""]
     os_sha = data.get("os_sha", "unknown")
     lines += [f"os SHA: `{os_sha}`", f"runs: {data['run_count']}", ""]
@@ -315,7 +370,7 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
 
     lines += ["## Pass/Fail by Rung", ""]
     by_rung: dict[int, dict] = defaultdict(lambda: {"pass": 0, "fail": 0})
-    for s in data["scores"]:
+    for s in scored:
         if s["passed"]:
             by_rung[s["rung"]]["pass"] += 1
         else:
@@ -341,17 +396,20 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
                 lines.append(f"  - {tv['task']}: {tv['verdict']}")
             lines.append("")
 
-    lines += verdict_section(data, data["scores"])
+    lines += verdict_section(data, all_scores)
 
-    lines += cross_model_section(data["scores"])
+    lines += cross_model_section(all_scores)
 
     lines += ["## Per-Run Results", ""]
     lines += ["| Task | Rung | Pass | Tokens | Cost |", "|------|------|------|--------|------|"]
-    for s in data["scores"]:
+    for s in scored:
         p = "✓" if s["passed"] else "✗"
         lines.append(
             f"| {s['task']} | rung{s['rung']} | {p} | {s.get('total_tokens', 0):,} | ${s.get('cost_usd', 0):.4f} |"
         )
+    lines.append("")
+
+    lines += difficulty_anchors_section(all_scores)
 
     return "\n".join(lines) + "\n"
 

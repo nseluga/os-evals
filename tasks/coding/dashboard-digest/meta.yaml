@@ -1,3 +1,4 @@
+sentinel: true
 category: coding
 contaminated: false
 group: clean
