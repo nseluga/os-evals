@@ -286,6 +286,7 @@ def cross_model_section(scores: list[dict]) -> list[str]:
     Headline question: can a cheaper model with the scaffolding reach what a stronger
     model reaches bare? Compares specific (model, rung) cells per task instead of
     treating each model as an isolated ladder. Sentinel tasks are excluded."""
+    scores = _effective_scores(scores)
     scored = [s for s in scores if not _is_sentinel(s)]
     sonnet = _find_model(scored, "sonnet")
     opus = _find_model(scored, "opus")

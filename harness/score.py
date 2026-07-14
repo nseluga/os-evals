@@ -244,12 +244,16 @@ def main() -> int:
     majority_records = []
     for (task, rung, model), group in repeat_groups.items():
         n = len(group)
+        # Use the first record as a template for non-aggregated fields.
+        template = group[0]
+        declared_total = template.get("repeat_total") or n
+        # Do not emit majority until all expected repeats are present.
+        if n < declared_total:
+            continue
         pass_count = sum(1 for r in group if r["passed"])
         majority_passed = pass_count >= math.ceil(n / 2)
         total_cost = sum(r.get("cost_usd") or 0 for r in group)
         total_tokens = sum(r.get("total_tokens") or 0 for r in group)
-        # Use the first record as a template for non-aggregated fields.
-        template = group[0]
         majority_record = {
             **template,
             "file": f"[majority:{n}] " + re.sub(r"_r\d+\.json$", ".json", template["file"]),
@@ -259,7 +263,9 @@ def main() -> int:
             "is_repeat_individual": False,
             "repeat_majority": True,
             "repeat_pass_count": pass_count,
-            "repeat_total": n,
+            "check_output": f"{pass_count}/{n} passed",
+            "check_rc": 0 if majority_passed else 1,
+            "repeat_total": declared_total,
             "repeat_index": None,
         }
         majority_records.append(majority_record)
