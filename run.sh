@@ -48,6 +48,10 @@ TASKS_DIR="$SCRIPT_DIR/tasks"
 SCORECARDS_DIR="$SCRIPT_DIR/scorecards"
 mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"
 
+# --- Clean stale transcripts from prior runs before starting ---
+echo "run.sh: cleaning stale transcripts from prior runs..."
+rm -f "$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl 2>/dev/null || true
+
 # --- Stamp the ~/os git SHA (which version of the setup is under test) ---
 if [ -d "$OS_DIR/.git" ]; then
     OS_SHA="$(git -C "$OS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
