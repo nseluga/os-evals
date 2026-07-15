@@ -1,52 +1,72 @@
 #!/bin/bash
 set -uo pipefail
-# check.sh — memory-notes-format (knowledge, rung-3 discriminating task)
+# check.sh — memory-notes-format (knowledge, rung-2/3 discriminating task)
 #
-# Validates that the response follows the documented library-notes memory convention:
-#   1. One file per document (never a combined NOTES.md)
-#   2. Do not stub the file before reading the source
+# Validates that the response recommends one file per document (never a combined NOTES.md).
+# Uses Python for context-aware checks to avoid false-positives on cautionary language
+# ("never a combined notes file", "Invented structure before reading is noise").
 #
-# Drains transcript from stdin, checks the text result.
-# Exit: 0=PASS, 1=FAIL (wrong answer), 2=infra error.
+# Drains transcript from stdin.
+# Exit: 0=PASS, 1=FAIL, 2=infra.
 
 TRANSCRIPT="$(cat)"
+TMPFILE="$(mktemp)"
+echo "$TRANSCRIPT" > "$TMPFILE"
 
-# Extract the result text from the JSON transcript
-RESULT="$(echo "$TRANSCRIPT" | python3 -c "
-import sys, json
+python3 - "$TMPFILE" <<'PY'
+import sys, json, re
+
 try:
-    data = json.load(sys.stdin)
-    print(data.get('result', ''))
+    data = json.load(open(sys.argv[1]))
+    result = data.get("result", "")
 except Exception as e:
-    print('', file=sys.stderr)
+    print(f"FAIL: could not parse transcript JSON: {e}", file=sys.stderr)
     sys.exit(2)
-" 2>&1)"
 
-if [ $? -ne 0 ]; then
-    echo "FAIL: could not parse transcript JSON" >&2
-    exit 2
-fi
+rl = result.lower()
 
-RESULT_LOWER="$(echo "$RESULT" | tr '[:upper:]' '[:lower:]')"
+# --- Check 1: must recommend separate/dedicated file per document ---
+ONEFILE_PATTERNS = [
+    r"one file per",
+    r"separate file",
+    r"its own file",
+    r"individual file",
+    r"dedicated file",
+    r"single file for (?:the|this|each) doc",
+    r"new topic folder",
+    r"new folder",
+    r"per.document",
+    r"one \.md file",
+    r"one md file",
+    r"named to match",
+    r"alongside the pdf",
+    r"never a combined",
+    r"not a shared",
+    r"not.*combined",
+]
+has_onefile = any(re.search(p, rl) for p in ONEFILE_PATTERNS)
+if not has_onefile:
+    print("FAIL: response does not recommend one-file-per-document convention", file=sys.stderr)
+    print("Expected: separate/dedicated file per document (not a combined NOTES.md)", file=sys.stderr)
+    sys.exit(1)
 
-# Must recommend a SEPARATE file per document (not combined/aggregated)
-if ! echo "$RESULT_LOWER" | grep -qE "(one file per|separate file|its own file|individual file|dedicated file|single file for (the|this|each) doc)"; then
-    echo "FAIL: response does not recommend one-file-per-document convention" >&2
-    echo "Expected: separate file per document (not combined NOTES.md)" >&2
-    exit 1
-fi
+# --- Check 2: must NOT positively recommend a combined/shared notes approach ---
+# Use context-aware check: look for "combined notes" WITHOUT a preceding negation
+COMBINED_PATTERN = re.compile(
+    r"(combined notes|shared notes|single notes file|one notes file|master notes|"
+    r"aggregate.* notes|all.* notes.*file|notes\.md.*all|central notes|general notes)"
+)
+NEGATION_WORDS = ("never", "not", "don't", "avoid", "no ", "instead", "don't")
 
-# Must NOT recommend a combined/shared notes file as the approach
-if echo "$RESULT_LOWER" | grep -qE "(combined notes|shared notes|single notes|one notes|master notes|aggregate.* notes|all.* notes.*file|notes\.md.*all|central notes)"; then
-    echo "FAIL: response recommends a combined notes approach (against the memory convention)" >&2
-    exit 1
-fi
+for m in COMBINED_PATTERN.finditer(rl):
+    # Look at the 40 chars before the match for a negation word
+    prefix = rl[max(0, m.start() - 40):m.start()]
+    if any(neg in prefix for neg in NEGATION_WORDS):
+        continue  # negated mention — not a recommendation
+    print("FAIL: response recommends a combined notes approach (against the memory convention)", file=sys.stderr)
+    print(f"  found: '...{rl[max(0,m.start()-20):m.end()+20]}...'", file=sys.stderr)
+    sys.exit(1)
 
-# Should advise reading BEFORE writing stubs/structure
-if echo "$RESULT_LOWER" | grep -qE "(stub|set up.*before.*read|creat.*before.*read|structur.*before.*read)"; then
-    echo "FAIL: response recommends stubbing the file before reading (against memory: 'never write stubs before reading the source')" >&2
-    exit 1
-fi
-
-echo "PASS: response follows the one-file-per-document convention and read-first approach"
-exit 0
+print("PASS: response recommends a separate file per document (not a combined notes file)")
+sys.exit(0)
+PY

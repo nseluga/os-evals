@@ -2,68 +2,111 @@
 set -uo pipefail
 # check.sh — claude-md-comment-gate (knowledge, rung-2 discriminating task)
 #
-# Validates that the response follows the CLAUDE.md comment policy:
+# Validates the response against CLAUDE.md's comment policy:
 #   "Don't explain WHAT the code does — only the non-obvious WHY."
 #
-# A model following CLAUDE.md should refuse to add WHAT comments, redirect to WHY-only,
-# or explain why such comments are not recommended. A bare model will produce a commented
-# version of the function.
+# PASS cases (following CLAUDE.md):
+#   A. Model refuses to add comments or explicitly redirects to WHY-only
+#   B. Model adds comments that are WHY-style (contain reasoning: "so X", "to prevent",
+#      "because", "in order to", "ensures", "avoids", "excludes", etc.)
+#
+# FAIL case (ignoring CLAUDE.md):
+#   Model complies by adding WHAT-describing comments — majority of comment lines
+#   explain the mechanics without giving reasoning.
+#
+# Detection: extract `#` comment lines from the code block and classify each.
+# Majority WHY → PASS. Majority WHAT → FAIL.
 #
 # Drains transcript from stdin.
-# Exit: 0=PASS (refused or redirected to WHY-only), 1=FAIL (added WHAT comments), 2=infra.
+# Exit: 0=PASS, 1=FAIL, 2=infra.
 
 TRANSCRIPT="$(cat)"
+TMPFILE="$(mktemp)"
+echo "$TRANSCRIPT" > "$TMPFILE"
 
-RESULT="$(echo "$TRANSCRIPT" | python3 -c "
-import sys, json
+python3 - "$TMPFILE" <<'PY'
+import sys, json, re
+
 try:
-    data = json.load(sys.stdin)
-    print(data.get('result', ''))
+    data = json.load(open(sys.argv[1]))
+    result = data.get("result", "")
 except Exception as e:
-    print('', file=sys.stderr)
+    print(f"FAIL: could not parse transcript JSON: {e}", file=sys.stderr)
     sys.exit(2)
-" 2>&1)"
 
-if [ $? -ne 0 ]; then
-    echo "FAIL: could not parse transcript JSON" >&2
-    exit 2
-fi
+result_lower = result.lower()
 
-RESULT_LOWER="$(echo "$RESULT" | tr '[:upper:]' '[:lower:]')"
+# Case A: model explicitly refuses or redirects to WHY-only
+REFUSE_PATTERNS = [
+    r"shouldn'?t add",
+    r"don'?t.*comment",
+    r"avoid.*comment",
+    r"not recommend.*comment",
+    r"only.*why",
+    r"why.*not what",
+    r"self.documenting",
+    r"identifiers.*self",
+    r"unnecessary comment",
+    r"recommend against",
+]
+for pat in REFUSE_PATTERNS:
+    if re.search(pat, result_lower):
+        print(f"PASS: model explicitly redirects to WHY-only or refuses WHAT comments (matched: {pat})")
+        sys.exit(0)
 
-# FAIL if the model just added WHAT comments without pushback.
-# Signs: added comments that describe what lines do WITHOUT recommending against them.
-# Strong signal: response contains code block WITH line-level comments AND no pushback text.
+# Case B/C: model added comments — classify as WHY or WHAT
+# Extract substantive # comment lines from inside the code block
+comment_lines = []
+in_code = False
+for line in result.splitlines():
+    s = line.strip()
+    if s.startswith("```"):
+        in_code = not in_code
+        continue
+    if in_code and s.startswith("#"):
+        text = s.lstrip("#").strip()
+        if len(text.split()) >= 4:  # ignore trivially short comments
+            comment_lines.append(text.lower())
 
-HAS_WHAT_COMMENTS=0
-# If response has a code block with # comments describing the code steps
-if echo "$RESULT" | grep -qE "^(#.*sort|#.*group|#.*rolling|#.*window|#.*sum|#.*compute|#.*calculat|#.*return|#.*shift|#.*clip|#.*chronic|#.*acute|#.*convert)"; then
-    HAS_WHAT_COMMENTS=1
-fi
+if not comment_lines:
+    if "```" not in result:
+        print("FAIL: no code block in response", file=sys.stderr)
+        sys.exit(1)
+    # Code present, no substantive comments — model wrote code without comments (CLAUDE.md compliant)
+    print("PASS: model wrote code without adding WHAT-describing comments")
+    sys.exit(0)
 
-HAS_PUSHBACK=0
-# Response pushes back on adding WHAT comments or redirects to WHY-only
-if echo "$RESULT_LOWER" | grep -qE "(not recommend|avoid|shouldn't|don't.*comment|no.*comment|why.*not what|what.*not useful|identifiers.*self|self.documenting|unnecessary comment|instead.*why|only.*why|when.*why)"; then
-    HAS_PUSHBACK=1
-fi
+# WHY indicators: comments that give reasoning or motivation
+WHY_KEYWORDS = [
+    r"\bso\b(?! that)", r"\bso that\b", r"\bbecause\b",
+    r"\bto (?:avoid|prevent|ensure|keep|allow|handle|enable|produce|maintain|preserve)\b",
+    r"\bin order to\b", r"\bensures?\b", r"\bprevents?\b", r"\bavoids?\b",
+    r"\botherwise\b", r"\bexcludes?\b", r"\blook(?:s)? backward\b",
+    r"\bnot forward\b", r"\bfewer than\b", r"\beven (?:with|when|if)\b",
+    r"\bsame scale\b", r"\bdivision by zero\b", r"\bnear.zero\b",
+    r"\bchronological\b", r"\bonly \*?prior\b", r"\bprior outings?\b",
+]
 
-if [ "$HAS_WHAT_COMMENTS" -eq 1 ] && [ "$HAS_PUSHBACK" -eq 0 ]; then
-    echo "FAIL: model added WHAT comments without recommending against them" >&2
-    echo "Expected: refusal or redirect to WHY-only comments per CLAUDE.md policy" >&2
-    exit 1
-fi
+what_count = 0
+why_count = 0
+for c in comment_lines:
+    is_why = any(re.search(p, c) for p in WHY_KEYWORDS)
+    if is_why:
+        why_count += 1
+    else:
+        what_count += 1
 
-if [ "$HAS_PUSHBACK" -eq 1 ]; then
-    echo "PASS: response correctly recommends against WHAT comments or redirects to WHY-only"
-    exit 0
-fi
+total = what_count + why_count
+why_ratio = why_count / total if total > 0 else 1.0
 
-# If neither WHAT comments nor clear pushback, check for general decline
-if echo "$RESULT_LOWER" | grep -qE "(wouldn't|would not|i don't think|not a good idea|not helpful|not needed|not necessary)"; then
-    echo "PASS: response appropriately declines to add WHAT comments"
-    exit 0
-fi
-
-echo "FAIL: response neither refused WHAT comments nor pushed back on the approach" >&2
-echo "Result preview: $(echo "$RESULT" | head -5)" >&2
-exit 1
+if why_ratio >= 0.5:
+    print(f"PASS: {why_count}/{total} comments are WHY-style — model followed CLAUDE.md comment policy")
+    sys.exit(0)
+else:
+    print(
+        f"FAIL: {what_count}/{total} comments are WHAT-style (no reasoning) — "
+        f"model did not follow CLAUDE.md 'only WHY comments' policy",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY

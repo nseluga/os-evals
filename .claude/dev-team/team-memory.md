@@ -34,3 +34,31 @@
 - **What worked:** Reading the actual function implementations before writing tests — the PLAN.md spec described expected behavior ("Authentication" → True, "403" → True) that didn't match actual patterns (authentication_error, unauthorized)
 - **What failed:** none
 - **Remember next run:** PLAN.md test specs for function behavior can be illustrative rather than literal — always read the actual implementation before writing tests, not just the spec
+
+## 2026-07-15 — dev-team-auto — Item 1: Fix pir-workload-feature timeout + two-sided validation
+- **Outcome:** DONE — 1 attempt, full track, branch feat/evals-batch2, commit 64218dd
+- **What happened:** Root cause: meta.yaml missing `multi_turn: true` → runs used --output-format json (one-shot) → bare rung1 timed out at 300s with 0 events. Fix: added `multi_turn: true` + `timeout_sec: 900`. Two-sided check.sh validation run: PASS on cf84a6b (real acwr_7_28), FAIL on chronic÷acute inversion. STATUS updated in meta.yaml and CONTRACT-NOTE.md.
+- **What worked:** Read analyze-report for root cause, then direct implementation. check.sh already worked correctly; the harness plumbing was the bug.
+- **What failed:** None — single attempt converged.
+- **Remember next run:** When a multi_turn task is missing `multi_turn: true` in meta.yaml, ALL rungs run as one-shot JSON (num_events always 0). The 0-event symptom is a meta.yaml parsing bug, not a streaming bug. Check meta.yaml before debugging the harness.
+
+## 2026-07-15 — dev-team-auto — Item 2: Wire Opus spot check by default
+- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
+- **What happened:** OPUS_SPOTCHECK flag existed (added in 48d7d20) but defaulted to 0. Changed default to 1 and renamed the opt-in flag to an opt-out --no-opus-spotcheck. Comment updated to reflect new default.
+- **What worked:** Single-line change + usage comment update. All downstream plumbing (run_matrix.py model loop, stats.py cross_model_section) already handled multiple models correctly.
+- **What failed:** None.
+- **Remember next run:** The Opus spot check plumbing was always there — the only missing piece was the default. If cross_model_section ever shows "opus=none" again, first check whether OPUS_SPOTCHECK reverted to 0 or --no-opus-spotcheck was passed.
+
+## 2026-07-15 — dev-team-auto — Item 3: No-signal warning in stats.py
+- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
+- **What happened:** Added no-signal detection at top of verdict_section() body. Computed inline from scores without adding a parameter to the function. Warning appears as first content line when every rung-pair is a tie across all models.
+- **What worked:** Inline computation (no signature change). The logic mirrors sign_test() — check if any task flips between two rungs for any model.
+- **What failed:** None.
+- **Remember next run:** The verdict_section() `data` parameter is UNUSED in the current implementation (the function only uses `scores`). If adding features, note this and consider whether to clean it up.
+
+## 2026-07-15 — dev-team-auto — Item 4: Draft discriminating tasks
+- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
+- **What happened:** Created 3 NEEDS-VALIDATION drafts in tasks/_draft/knowledge/: memory-notes-format (rung3 — one-file-per-doc convention vs generic advice), claude-md-comment-gate (rung2 — no-WHAT-comments policy vs document-your-code default), memory-tradeoffs-reflex (rung3 — proactive tradeoffs reflex; highest risk of being non-discriminating). REVIEW.md with validation instructions included.
+- **What worked:** Targeting preferences that are counter-intuitive vs general best practices (most reliable discrimination). Flagging the highest-risk draft explicitly.
+- **What failed:** None in authoring; validation not done (NEEDS-VALIDATION by design).
+- **Remember next run:** Draft 3 (memory-tradeoffs-reflex) has explicit warning that modern Claude models may already volunteer tradeoffs — validate rung1 behavior before trusting this one. If it doesn't discriminate, cut it. Draft 1 and 2 are higher-confidence discriminators.
