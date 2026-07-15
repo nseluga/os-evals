@@ -1,0 +1,1 @@
+In our dev-team convergence loop, the dt-review agent tags findings by severity. Which severity levels block an item from being marked DONE (requiring another QA pass), and which are applied without looping back through QA?

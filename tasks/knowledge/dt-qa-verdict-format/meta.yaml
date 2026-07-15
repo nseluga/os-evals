@@ -1,0 +1,24 @@
+category: knowledge
+group: skill-specific
+curated_skill: dt-qa
+contaminated: false
+source: authored to target dt-qa skill — rung 4
+description: |
+  A rung-4 task: tests whether the model knows the exact VERDICT format emitted by
+  the dt-qa agent and the distinction between "tests" and "tests+behavioral" gate modes.
+
+  The dt-qa skill emits "## VERDICT: PASS" or "## VERDICT: FAIL" as machine-readable
+  lines the orchestrator routes on. "tests+behavioral" gate mode requires QA to exercise
+  the live running path (smoke pass against a real server/dev DB), not just run tests.
+
+  Why bare Claude should fail: generic CI output says "all tests pass" or "build green"
+  — the VERDICT: prefix is unique to this system. Bare Claude doesn't know it.
+
+  Why contamination is NOT a concern: the VERDICT format is specific to Nate's
+  dev-team skill files; it's not documented anywhere a pre-training corpus would have.
+
+  Check type: transcript grep — requires VERDICT: PASS/FAIL pattern and description
+  of tests+behavioral as requiring more than just running the test suite.
+
+  STATUS: VALIDATED — bare-fail and os-informed-pass confirmed 2026-07-15 by manual
+  two-sided check before promotion.

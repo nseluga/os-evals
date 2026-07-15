@@ -1,0 +1,26 @@
+category: knowledge
+group: skill-specific
+curated_skill: dt-review
+contaminated: false
+source: authored to target dt-review skill — rung 4
+description: |
+  A rung-4 task: tests whether the model knows the severity policy in the convergence
+  loop — Critical and Important findings both block exit (require dt-fix + another QA
+  pass), while Minor findings are applied by dt-fix once without looping back.
+
+  The convergence-loop spec: "if review has zero Critical AND zero Important findings:
+  if review has Minor findings: run dt-fix once to apply them; mark DONE."
+
+  Why bare Claude should fail: standard code review treats severity as a sliding scale
+  where "Important" is situational. Nate's loop treats Critical AND Important as
+  equally hard-blocking (both require a full QA re-run); only Minor avoids the loop.
+  Bare models hedge Important as "generally should be addressed."
+
+  Why contamination is NOT a concern: the Critical/Important/Minor tier split with
+  Minor-not-requiring-reQA is specific to the convergence-loop spec.
+
+  Check type: transcript text — Python sentence-level analysis verifying Important
+  described as blocking (no hedging) and Minor described as applied without re-QA.
+
+  STATUS: VALIDATED — bare-fail (both v1 and v2) and os-informed-pass confirmed
+  2026-07-15 by manual two-sided check before promotion.
