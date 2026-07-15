@@ -3,6 +3,9 @@ runs/
 __pycache__/
 *.pyc
 
+# Claude Code worktrees — local scratch, must never be committed as gitlinks.
+.claude/worktrees/
+
 # Personal planning/progress/spec — local only, never on GitHub.
 # Root-anchored so eval-task fixtures (tasks/**/PLAN.md, PROGRESS.md) stay tracked.
 /PLAN.md
