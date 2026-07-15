@@ -1,0 +1,29 @@
+name: dt-qa-verdict-format
+STATUS: NEEDS-VALIDATION
+category: knowledge
+group: skill-specific
+curated_skill: dt-qa
+contaminated: false
+
+description: >
+  Tests whether the model knows the exact VERDICT format emitted by the dt-qa agent
+  in Nate's dev-team system. The gate relies on machine-readable lines the orchestrator
+  routes on. A bare model gives generic "tests pass/fail" language; an os-informed model
+  knows the exact "VERDICT: PASS" / "VERDICT: FAIL" convention and what gate modes mean.
+
+discrimination_target: rung4 (skills)
+discrimination_hypothesis: >
+  The dt-qa skill file specifies exactly "VERDICT: PASS" / "VERDICT: FAIL" as the
+  machine-readable lines the orchestrator routes on. Without reading the skill definition,
+  a model gives generic test status language. With the skill available (rung4), it knows
+  the exact format and what gate mode "tests+behavioral" requires vs just "tests".
+
+check_rationale: >
+  Pass if response includes the exact VERDICT: PASS / VERDICT: FAIL string pattern
+  AND correctly describes tests+behavioral as requiring more than just tests.
+  Fail if it uses generic test status language without the VERDICT prefix.
+
+validation_concern: low-medium
+  The VERDICT format is specific to Nate's system and counter-intuitive vs generic CI
+  output. The gate-mode distinction (tests vs tests+behavioral) is also specific.
+  Low risk of bare Claude accidentally knowing this format.

@@ -1,0 +1,32 @@
+name: memory-terse-response-policy
+STATUS: NEEDS-VALIDATION
+category: knowledge
+group: memory-behavior
+curated_skill: ""
+contaminated: false
+
+description: >
+  Tests whether the model knows Nate's terse response preference: no trailing summaries
+  ("I've completed..."), no narrating steps taken, no re-stating what was just done.
+  Targets the feedback-explain-concepts-plainly and surface-tradeoffs-proactively memory
+  entries and the global CLAUDE.md terse instruction. A bare model adds polite summaries;
+  an os-informed model knows to omit them.
+
+discrimination_target: rung2/rung3 (CLAUDE.md + memory)
+discrimination_hypothesis: >
+  Bare Claude almost always adds a closing summary like "I've completed the task..."
+  or "In summary, I...". CLAUDE.md says "Your responses should be short and concise."
+  and memory says not to add trailing summaries. With both, Claude should know to omit
+  them. This is counter-intuitive vs. LLM training (be helpful, summarize).
+
+check_rationale: >
+  Scenario: user asks how to end a response after finishing a task in a session.
+  Pass if response says NOT to add trailing summaries/narration (or references the
+  terse preference). Fail if it recommends adding summaries or sign-offs.
+  This is a knowledge question, not a behavior demonstration.
+
+validation_concern: medium
+  Some Claude models are already trained toward concise responses. Validate that
+  rung1 actually recommends adding summaries before treating this as discriminating.
+  The check may need to be a scenario that elicits the wrong behavior, not just
+  asking about the policy.

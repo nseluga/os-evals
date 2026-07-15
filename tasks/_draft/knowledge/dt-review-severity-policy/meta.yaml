@@ -1,0 +1,30 @@
+name: dt-review-severity-policy
+STATUS: NEEDS-VALIDATION
+category: knowledge
+group: skill-specific
+curated_skill: dt-review
+contaminated: false
+
+description: >
+  Tests whether the model knows the exact severity policy in the dt-review → dt-fix
+  convergence loop: Critical and Important findings loop back (block DONE), but Minor
+  findings are applied without looping. A bare model gives generic severity tier guidance;
+  an os-informed model knows the specific blocking vs non-blocking distinction.
+
+discrimination_target: rung4 (skills)
+discrimination_hypothesis: >
+  The convergence-loop spec says: "if review has zero Critical AND zero Important findings:
+  if review has Minor findings: run dt-fix once to apply them; mark DONE."
+  Critical/Important block the exit and consume an attempt; Minor don't.
+  Without the skill, models give generic "fix all critical issues" advice.
+  With the skill, they know Minor findings don't loop and don't block exit.
+
+check_rationale: >
+  Pass if response correctly identifies Critical AND Important as blocking (both must
+  be mentioned) and Minor as non-blocking (fixed without looping back to QA).
+  Fail if it says only "Critical" blocks, or if it says Minor also requires re-QA.
+
+validation_concern: low
+  The Critical/Important vs Minor split is specific and counter-intuitive:
+  most code review workflows require ALL issues to be fixed before merge.
+  Nate's system deliberately allows Minor to pass without re-QA.

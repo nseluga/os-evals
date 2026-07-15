@@ -1,0 +1,1 @@
+I just finished implementing a feature in Claude Code and I'm about to send my response to the user. They can see the file diffs and tool output already. Should I end my response with a summary of what I just did — something like "I've completed the implementation. Here's what changed: I added X, modified Y, and updated Z." — or not? What's the right approach here and why?

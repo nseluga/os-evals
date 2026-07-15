@@ -146,3 +146,98 @@ WORKSPACE_DIR=<bad_ws>  bash tasks/_draft/coding/rangestats-engine/check.sh </de
 Approve either/both to promote into the live tree (a later step moves them out of
 `tasks/_draft/` and wires `curated_skill` into the scored matrix), or reject with notes.
 Nothing counts until you sign off on each check.
+
+---
+
+# Knowledge-layer draft tasks — batch #3 (APPROVAL-GATED, 2026-07-15)
+
+Three candidate discriminating tasks targeting rung2/rung3/rung4 layers with zero
+demonstrated lift in iterations 3–4. **Nothing here is in the live suite.**
+
+All are marked `STATUS: NEEDS-VALIDATION` in their meta.yaml; none will be scored
+until you approve and promote them.
+
+## Why these exist
+
+Iteration 4 Sonnet arm at ceiling (near-all ties). The only tasks with lift are
+`memory-notes-format` (rung3) and `claude-md-comment-gate` (rung2), both now live.
+Need more tasks that discriminate at the rung boundaries with zero current signal.
+
+The batch targets:
+- Skill-specific knowledge (rung4): exact formats the dt-qa and dt-review skills use
+- Memory-specific preference (rung3): terse response policy (counter-training-data)
+
+| Task | Layer | Target knowledge | Risk |
+|------|-------|-----------------|------|
+| `dt-qa-verdict-format` | rung4 | VERDICT: PASS/FAIL exact format; gate mode distinction | low-medium |
+| `dt-review-severity-policy` | rung4 | Critical/Important blocks; Minor applied without re-QA | low |
+| `memory-terse-response-policy` | rung2/3 | No trailing summaries when diffs/output visible | medium |
+
+---
+
+## Task 1 — `dt-qa-verdict-format` (rung4, dt-qa skill)
+
+**What it probes.** When the dt-qa agent finishes evaluating a plan item, it must emit
+`VERDICT: PASS` or `VERDICT: FAIL` on its own line — machine-readable format the
+orchestrator routes on. It must also know that `tests+behavioral` gate mode requires
+running the live path (smoke pass against a real server), not just tests.
+
+**Discrimination hypothesis.** Without reading `~/.claude/skills/dt-qa/skill.md`, a model
+gives generic "tests pass/fail" or "all checks green" language. The VERDICT prefix is
+system-specific and counter-intuitive vs CI output formats.
+
+**Check.** Requires both: (1) `VERDICT: PASS` / `VERDICT: FAIL` string pattern, and (2)
+description of `tests+behavioral` as requiring behavioral/smoke/live/endpoint exercise.
+
+**Validation concern: low-medium.** The VERDICT format is unique to this system. The
+gate mode distinction is documented only in the skill files.
+
+---
+
+## Task 2 — `dt-review-severity-policy` (rung4, dt-review skill)
+
+**What it probes.** The convergence loop's severity policy: Critical AND Important
+findings block exit and consume an attempt (require another QA pass); Minor findings
+are applied by dt-fix once without looping. This split is specific to the loop spec.
+
+**Discrimination hypothesis.** Most code review workflows require ALL issues fixed
+before merge. Nate's loop deliberately allows Minor to pass without re-QA — this is
+counter-intuitive and requires reading `convergence-loop.md`. Bare Claude says
+"fix everything before shipping."
+
+**Check.** Requires: (1) Critical mentioned as blocking, (2) Important mentioned as
+blocking, (3) Minor mentioned as non-blocking (applied without QA loop).
+
+**Validation concern: low.** The Critical/Important vs Minor split with Minor
+explicitly not requiring re-QA is very specific to this system.
+
+---
+
+## Task 3 — `memory-terse-response-policy` (rung2/rung3)
+
+**What it probes.** Nate's memory and CLAUDE.md say: do not add trailing summaries
+("I've completed..."), do not narrate steps taken. When the user can see diffs/tool
+output, a closing summary is redundant. Bare Claude almost always adds a polite summary.
+
+**Discrimination hypothesis.** LLM training strongly pushes toward polite summaries
+and completion acknowledgements. CLAUDE.md + memory explicitly invert this. Counter-
+training-data preferences are the highest-confidence discriminators.
+
+**Check.** Scenario: should you end a response with "Here's what changed: I added X,
+modified Y..."? Pass if response says no/skip/omit. Fail if it recommends the summary.
+
+**Validation concern: medium.** Claude 4.x may already be trained toward conciseness.
+Validate rung1 explicitly — if bare Claude already says skip the summary, redesign.
+
+---
+
+## Validation process for batch #3
+
+For each task, before promoting:
+1. `./run.sh --tasks _draft/knowledge/TASKNAME --rungs 1 --no-opus-spotcheck` (bare rung1)
+2. Verify check.sh FAILS on the rung1 output (the task discriminates)
+3. `./run.sh --tasks _draft/knowledge/TASKNAME --rungs 4 --no-opus-spotcheck` (skills rung4)
+4. Verify check.sh PASSES on the rung4 output
+5. Move into `tasks/knowledge/TASKNAME/` and register `curated_skill` in meta.yaml
+
+Do NOT promote until both sides confirmed.

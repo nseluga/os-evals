@@ -1,0 +1,1 @@
+I'm setting up the QA step in our dev-team convergence loop. When the dt-qa agent finishes evaluating a plan item, what exact output should it emit to indicate the item passed? And what does "gate mode: tests+behavioral" require compared to just "tests"?
