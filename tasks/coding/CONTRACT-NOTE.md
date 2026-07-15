@@ -89,3 +89,49 @@ to help achieve it — that delta is exactly what the eval wants to detect.
   headless checks much harder, which is why I leaned on project-dashboard. My
   recommendation: keep as-is for the coding batch and get Patio coverage in the analysis
   batch instead.)
+
+## D. pir-workload-feature determinism + skill_fired audit (2026-07-15, batch 3)
+
+Item 4 of PLAN.md batch 3 directed a determinism re-validation and inspection of the
+`_meta.skill_fired` field for the failing r3/r4 runs.
+
+### Determinism result
+
+check.sh run 5 times on each fixed input from a fresh restored workspace (base cf84a6b^
++ venv):
+
+- **Known-correct** (cf84a6b impl with acwr_7_28): **5/5 PASS** — output identical across
+  all 5 runs; no timing or ordering flakiness.
+- **Known-wrong** (inverted ratio chronic÷acute): **5/5 FAIL** — consistently fails at
+  Property 1 (acwr contains inf/NaN when pitches_7d=0 in acute window and chronic is
+  nonzero, so inversion produces inf). Result is deterministic.
+
+**Conclusion: check.sh is deterministic on fixed inputs.** The r3/r4 instability is NOT
+a check flakiness issue.
+
+### skill_fired audit
+
+Inspected `_meta.skill_fired` for all iter-4 pir-workload-feature Sonnet runs:
+
+- **rung1 r1–r3:** `skill_fired=False` (expected — no skills at rung1)
+- **rung2 r1–r3:** `skill_fired=False` (expected — no skills at rung2)
+- **rung3 r1–r3:** `skill_fired=False` (expected — no skills at rung3)
+- **rung4 r1–r3:** `skill_fired=False` ← **ROUTING FAILURE**
+
+All 3 rung4 repeats had `skill_fired=False` — the `baseball-research` skill was never
+invoked, even though it was available. The r3→r4 regression (r2: 3/3, r3: 1/3, r4: 1/3
+in original scorecard) is a **routing failure**, not evidence that the skill caused the
+regression. The model at rung4 attempted the task without invoking baseball-research.
+
+**Call per PLAN item 4:** Routing failure — NOT a confirmed `baseball-research` prune
+candidate. The skill never triggered, so we have no signal about what the skill would
+have done. The instability is attributed to the model failing to route correctly to the
+skill at rung4. Do NOT prune baseball-research based on iter-4 data.
+
+### What remains noisy
+
+The original r1 2/3 vs r2 3/3 result is NOT from this workspace (iter4 Sonnet workspace
+dirs were cleaned up before re-score). The r3/r4 failure with WORKSPACE_DIR infra in
+re-score confirms check.sh ran at original score time (workspaces existed). The per-run
+`is_error=False` for all Sonnet pir runs confirms the model produced output — the
+check.sh gate is what determines pass/fail, and it is now confirmed deterministic.
