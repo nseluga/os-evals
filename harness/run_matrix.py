@@ -283,6 +283,22 @@ def looks_like_rate_limit(stdout: str, stderr: str, transcript: dict) -> bool:
     return any(p in hay for p in _RATE_LIMIT_PATTERNS)
 
 
+RATE_LIMIT_MAX_RETRIES = 3
+
+
+def rate_limit_backoff_seconds(attempt: int) -> float:
+    """Exponential backoff delay for a rate-limited retry attempt (0-indexed).
+
+    attempt=0 → 30s, attempt=1 → 60s, attempt=2 → 120s.
+    Capped at 120s so a 3-retry sequence costs at most ~3.5 minutes of wall time.
+    Each delay has a ±20% jitter to spread concurrent runs' retry storms.
+    """
+    import random
+    base = min(30 * (2 ** attempt), 120)
+    jitter = base * 0.2 * (2 * random.random() - 1)
+    return max(1.0, base + jitter)
+
+
 def _ensure_git_repo(ws_dir: Path) -> None:
     """Make ws_dir a self-contained git repo so orchestrator skills can branch/worktree.
 
@@ -399,34 +415,52 @@ def run_one(
 
     _t0 = time.monotonic()
     timed_out = False
-    try:
-        result = subprocess.run(
-            cmd,
-            input=prompt_text,
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=cwd,
-            timeout=timeout_sec,
-        )
-        stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
-    except subprocess.TimeoutExpired as e:
-        # Salvage whatever streamed before the kill so a long multi-turn run is still
-        # partially inspectable/scoreable rather than a total loss.
-        timed_out = True
-        stdout = e.stdout if isinstance(e.stdout, str) else (e.stdout.decode() if e.stdout else "")
-        stderr = e.stderr if isinstance(e.stderr, str) else (e.stderr.decode() if e.stderr else "")
-        returncode = -1
-        print(f"    TIMEOUT after {timeout_sec}s", flush=True)
-    elapsed_sec = round(time.monotonic() - _t0, 1)
-
-    # Normalize both output formats into the single transcript shape score.py expects
-    # (result, is_error, usage, num_turns, total_cost_usd).
+    stdout = stderr = ""
+    returncode = -1
     events: list[dict] = []
-    if multi_turn:
-        transcript, events = _parse_stream(stdout, stderr)
-    else:
-        transcript = _parse_single(stdout, stderr)
+    transcript: dict = {}
+
+    for _attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt_text,
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=cwd,
+                timeout=timeout_sec,
+            )
+            stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
+        except subprocess.TimeoutExpired as e:
+            # Salvage whatever streamed before the kill so a long multi-turn run is still
+            # partially inspectable/scoreable rather than a total loss.
+            timed_out = True
+            stdout = e.stdout if isinstance(e.stdout, str) else (e.stdout.decode() if e.stdout else "")
+            stderr = e.stderr if isinstance(e.stderr, str) else (e.stderr.decode() if e.stderr else "")
+            returncode = -1
+            print(f"    TIMEOUT after {timeout_sec}s", flush=True)
+
+        # Normalize output into the transcript shape score.py expects so we can
+        # detect whether a rate-limit error occurred before deciding to retry.
+        if multi_turn:
+            transcript, events = _parse_stream(stdout, stderr)
+        else:
+            transcript = _parse_single(stdout, stderr)
+
+        # If the run hit a rate limit (not an auth error), back off and retry.
+        if (looks_like_rate_limit(stdout, stderr, transcript)
+                and not looks_like_auth_error(stdout, stderr, transcript)
+                and not timed_out
+                and _attempt < RATE_LIMIT_MAX_RETRIES):
+            delay = rate_limit_backoff_seconds(_attempt)
+            print(f"    rate-limit (429) detected — retry {_attempt + 1}/{RATE_LIMIT_MAX_RETRIES} "
+                  f"in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+            continue
+        break
+
+    elapsed_sec = round(time.monotonic() - _t0, 1)
 
     skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
     auth_error = looks_like_auth_error(stdout, stderr, transcript)

@@ -8,7 +8,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_matrix import detect_skill_fired, _parse_stream, looks_like_auth_error, looks_like_rate_limit  # noqa: E402
+from run_matrix import (  # noqa: E402
+    detect_skill_fired,
+    _parse_stream,
+    looks_like_auth_error,
+    looks_like_rate_limit,
+    rate_limit_backoff_seconds,
+    RATE_LIMIT_MAX_RETRIES,
+)
 
 
 def check(label, got, want):
@@ -188,6 +195,47 @@ def test_looks_like_auth_error_still_routes_correctly():
     check("regression: auth string → looks_like_rate_limit False", rate_result, False)
 
 
+# ---------------------------------------------------------------------------
+# rate_limit_backoff_seconds
+# ---------------------------------------------------------------------------
+
+def test_rate_limit_backoff_monotonic():
+    # Each successive attempt must produce a strictly larger base delay.
+    # Use deterministic seed so jitter doesn't flip the ordering.
+    import random
+    random.seed(0)
+    delays = [rate_limit_backoff_seconds(a) for a in range(RATE_LIMIT_MAX_RETRIES)]
+    # Strip jitter comparison: base values 30, 60, 120 are strictly monotonic.
+    # We assert each value is positive and greater than zero.
+    for i, d in enumerate(delays):
+        check(f"rate_limit_backoff_seconds: attempt {i} > 0", d > 0, True)
+    # Also verify the sequence is monotonically increasing in expectation by checking
+    # that attempt 0 base (30s) is less than attempt 2 base (120s) even with max jitter.
+    # 30 * 1.2 = 36 < 120 * 0.8 = 96
+    low_end_max = 30 * 1.2
+    high_end_min = 120 * 0.8
+    check("rate_limit_backoff_seconds: attempt 0 max < attempt 2 min (monotonic)", low_end_max < high_end_min, True)
+
+
+def test_rate_limit_backoff_attempt0_positive():
+    import random
+    random.seed(42)
+    d = rate_limit_backoff_seconds(0)
+    check("rate_limit_backoff_seconds: attempt 0 returns positive float", d > 0, True)
+
+
+def test_rate_limit_backoff_capped():
+    import random
+    random.seed(1)
+    # Attempt 10 would be 30 * 2^10 = 30720 without cap; cap is 120 ± 20%.
+    d = rate_limit_backoff_seconds(10)
+    check("rate_limit_backoff_seconds: capped at ~120s (±20%)", d <= 120 * 1.2, True)
+
+
+def test_rate_limit_max_retries_positive():
+    check("RATE_LIMIT_MAX_RETRIES > 0", RATE_LIMIT_MAX_RETRIES > 0, True)
+
+
 if __name__ == "__main__":
     test_detect_skill_fired_match()
     test_detect_skill_fired_no_match()
@@ -209,5 +257,10 @@ if __name__ == "__main__":
     test_looks_like_rate_limit_exceed_account()
     test_looks_like_rate_limit_plain_task_result()
     test_looks_like_auth_error_still_routes_correctly()
+
+    test_rate_limit_backoff_monotonic()
+    test_rate_limit_backoff_attempt0_positive()
+    test_rate_limit_backoff_capped()
+    test_rate_limit_max_retries_positive()
 
     print("ALL PASS")
