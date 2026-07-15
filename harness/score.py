@@ -133,9 +133,21 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     # Auth/OAuth-expiry or 429 rate-limit detected mid-run is infra, not a task failure.
     # Map both to check_rc==2 (unscoreable) WITHOUT running check.sh — neither tells us
     # anything about the task. Rate-limit is checked first; auth takes precedence if both.
+    #
+    # For transcripts produced before run_matrix stamped _meta.rate_limited (iter 4 and
+    # earlier), fall back to inline detection on the result text so a re-score of existing
+    # runs correctly reclassifies the 27 iter-4 Opus 429s as infra.
+    _rate_limit_patterns = ("rate limit", "rate_limit", "429", "exceed your account",
+                            "overloaded_error", "request rejected")
+    _result_lower = transcript.get("result", "").lower()
+    rate_limited = (
+        meta["rate_limited"]  # new transcripts: trust the stamped flag
+        if "rate_limited" in meta
+        else any(p in _result_lower for p in _rate_limit_patterns)  # old transcripts: detect inline
+    )
     infra_label = (
         "rate-limit (429) detected mid-run — infra, not a task fail"
-        if meta.get("rate_limited") and not meta.get("auth_error")
+        if rate_limited and not meta.get("auth_error")
         else "auth/OAuth error detected mid-run (see _meta.stderr)"
         if meta.get("auth_error")
         else None
