@@ -1,0 +1,28 @@
+category: knowledge
+contaminated: false
+group: knowledge-informed
+curated_skill: none (tests CLAUDE.md layer — rung 2)
+source: authored to target CLAUDE.md comment policy
+description: |
+  A rung-2 task by design: tests whether CLAUDE.md's "no WHAT comments" instruction
+  overrides the default coding-community advice to document code with inline comments.
+
+  The CLAUDE.md rule being tested:
+    "Default to writing no comments. Only add one when the WHY is non-obvious:
+     a hidden constraint, a subtle invariant, a workaround for a specific bug...
+     Don't explain WHAT the code does, since well-named identifiers already do that."
+
+  Why bare Claude should fail: common programming advice is "document your code" and
+  specifically "add comments explaining what each step does." A bare model asked to
+  add comments to a function will almost always add WHAT-describing comments.
+  A model with CLAUDE.md guidance should refuse or redirect to WHY-only comments.
+
+  Why contamination is NOT a concern: while "clean code" advocates exist, the default
+  community norm is "more documentation is better." CLAUDE.md's explicit prohibition is
+  counter to this default, so bare Claude answers with the majority convention.
+
+  Check type: transcript grep — verifies the response recommends against WHAT comments
+  or explicitly declines to write them.
+
+  STATUS: NEEDS-VALIDATION — confirm check PASSES with CLAUDE.md, FAILS on a canned
+  "here are your comments" response before scoring.

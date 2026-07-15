@@ -3,6 +3,8 @@ contaminated: true
 group: knowledge-informed
 curated_skill: baseball-research
 repeat: 3
+multi_turn: true
+timeout_sec: 900
 source: git-derived (PIR session history is thin — only 1 retained session). Task reconstructs
         the real commit cf84a6b "notebook 5 draft" which introduced acwr_7_28 in
         src/features/workload_features.py. NOT sourced from a session prompt — flagged.
@@ -33,6 +35,5 @@ description: |
   current-game exclusion — NOT Nate's idiosyncratic 28÷4 rounding. Requires a Python env
   with pandas/numpy (PIR requirements.txt) and the WORKSPACE_DIR contract extension.
 
-  STATUS: NEEDS-VALIDATION + HIGH SETUP-FLATTERING SCRUTINY. See CONTRACT-NOTE.md audit
-  section. Confirm the check passes on the real cf84a6b implementation and fails on a
-  plausibly-wrong (inverted / leaky) implementation before trusting it.
+  STATUS: VALIDATED (2026-07-15: two-sided confirmed — PASS on cf84a6b real impl,
+  FAIL on inverted-ratio impl). See CONTRACT-NOTE.md for full audit record.

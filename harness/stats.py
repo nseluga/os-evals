@@ -157,6 +157,27 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
     sentinel_count = len({s["task"] for s in scores if _is_sentinel(s)})
 
     lines: list[str] = ["## Verdict — does the setup earn its keep?", ""]
+
+    # Loud warning when the suite has zero discriminating signal.
+    # A rung-pair discriminates if ANY task flips pass/fail between its two rungs.
+    # If no pair discriminates across any model, the suite cannot attribute value to any layer.
+    _by_tr = {(s["task"], s["rung"], s.get("model", "")): s["passed"] for s in scored}
+    _all_tasks = sorted({s["task"] for s in scored})
+    _all_models = sorted({s.get("model", "") for s in scored})
+    _has_any_flip = any(
+        _by_tr.get((t, hi, m)) != _by_tr.get((t, lo, m))
+        and (t, lo, m) in _by_tr and (t, hi, m) in _by_tr
+        for m in _all_models
+        for lo, hi in RUNG_PAIRS
+        for t in _all_tasks
+    )
+    if not _has_any_flip and _all_tasks and _all_models:
+        lines.append(
+            "⚠️ SUITE HAS NO DISCRIMINATING SIGNAL — every task ties at every rung. "
+            "Add tasks bare Claude fails but a scaffolded rung passes."
+        )
+        lines.append("")
+
     if sentinel_count:
         lines.append(
             f"_{sentinel_count} task(s) excluded as difficulty anchors "

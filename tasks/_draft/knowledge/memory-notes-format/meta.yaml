@@ -1,0 +1,27 @@
+category: knowledge
+contaminated: false
+group: knowledge-informed
+curated_skill: none (tests memory layer — rung 3)
+source: authored to target feedback-library-notes-format memory entry
+description: |
+  A rung-3 task by design: tests whether the MEMORY layer's specific note-taking
+  convention changes Claude's answer compared to generic best-practice advice.
+
+  The memory entry being tested: feedback-library-notes-format.md
+    - "one file per document, never a combined NOTES.md"
+    - "never write stubs before reading the source"
+
+  Why bare Claude should fail: generic advice is to use a combined/aggregated notes
+  file (easier searching, one place to look). Nate's specific convention inverts this —
+  one file per document. A bare model answers with sensible-but-wrong generic practice.
+  A model with memory access gives the specific convention.
+
+  Why contamination is NOT a concern: the answer is a private preference, not a public
+  best practice. grep for "one file per document" across any public training corpus
+  returns nothing specific to this convention.
+
+  Check type: transcript grep — looks for the specific "one file per document" convention
+  and a prohibition on stubs before reading.
+
+  STATUS: NEEDS-VALIDATION — confirm check PASSES when Claude reads memory, FAILS on
+  a canned generic "use a NOTES.md" answer before scoring.

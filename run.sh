@@ -8,9 +8,9 @@ set -euo pipefail
 # cleans up the per-run workspaces.
 #
 # Usage:
-#   ./run.sh                       # full matrix: 12 tasks × rungs 1-4 on Sonnet
+#   ./run.sh                       # full matrix: Sonnet rungs 1-4 + Opus spot check (rungs 1,4)
 #   ./run.sh --tasks a,b --rungs 1,4 --models claude-sonnet-4-6
-#   ./run.sh --opus-spotcheck      # ALSO run rungs 1,4 on Opus (bare-vs-full spot check)
+#   ./run.sh --no-opus-spotcheck   # skip Opus spot check (Sonnet-only run)
 #   ./run.sh --no-build            # skip build_configs.sh (reuse existing configs/)
 #   ./run.sh --keep-ws             # keep runs/*.ws (default: cleaned after scoring)
 #
@@ -27,7 +27,7 @@ MODELS="claude-sonnet-4-6"
 OPUS_MODEL="claude-opus-4-8"
 DO_BUILD=1
 KEEP_WS=0
-OPUS_SPOTCHECK=0
+OPUS_SPOTCHECK=1
 OS_DIR="${OS_DIR:-$HOME/os}"
 
 while [ $# -gt 0 ]; do
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
         --models) MODELS="$2"; shift 2;;
         --no-build) DO_BUILD=0; shift;;
         --keep-ws) KEEP_WS=1; shift;;
-        --opus-spotcheck) OPUS_SPOTCHECK=1; shift;;
+        --no-opus-spotcheck) OPUS_SPOTCHECK=0; shift;;
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
 done

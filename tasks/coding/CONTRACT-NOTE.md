@@ -73,9 +73,12 @@ to help achieve it — that delta is exactly what the eval wants to detect.
   as intended — not flattery — because the check is a real behavioral test.
 - Honest caveats: (a) sourced from git, not session history (PIR sessions are thin);
   (b) I authored the test, so I control the gate — higher scrutiny warranted.
-- STATUS: VALIDATED — base cf84a6b^ ships the rolling helpers but not `acwr_7_28` (so the
-  task really is "add ACWR", 119 lines vs 200 at HEAD); the real cf84a6b implementation
-  passes; an inverted (chronic/acute) implementation fails. Fair, achievable gate.
+- STATUS: VALIDATED (2026-07-15: two-sided confirmed by dev-team-auto)
+  - PASS: `git archive cf84a6b` (real acwr_7_28 implementation) → all 3 properties pass
+  - FAIL: inverted ratio (chronic÷acute) → Property 2 fails with "first appearance acwr=1.0
+    too high" (check correctly rejects wrong direction / division-order errors)
+  - base cf84a6b^ ships rolling helpers but not `acwr_7_28` (task really is "add ACWR",
+    119 lines vs 200 at HEAD); check is convention-agnostic (property-based, not constant-checking)
 
 ## C. Status / remaining question
 - ✅ WORKSPACE_DIR extension implemented (Section A) — approved shape.
