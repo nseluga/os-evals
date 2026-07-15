@@ -62,3 +62,38 @@
 - **What worked:** Targeting preferences that are counter-intuitive vs general best practices (most reliable discrimination). Flagging the highest-risk draft explicitly.
 - **What failed:** None in authoring; validation not done (NEEDS-VALIDATION by design).
 - **Remember next run:** Draft 3 (memory-tradeoffs-reflex) has explicit warning that modern Claude models may already volunteer tradeoffs — validate rung1 behavior before trusting this one. If it doesn't discriminate, cut it. Draft 1 and 2 are higher-confidence discriminators.
+
+## 2026-07-15 16:00 — dev-team-auto — Item 1: Classify 429 rate limits as infra, not task fails
+- **Outcome:** DONE — 1 attempt, light track, branch feat/harness-batch3, commit c345118
+- **What happened:** Added looks_like_rate_limit() + _RATE_LIMIT_PATTERNS in run_matrix.py; wired rate_limited into _meta; score.py short-circuits before run_check when rate_limited (same pattern as auth_error). 5 new tests, all pass.
+- **What worked:** Mirroring the auth_error pattern exactly — same structure, same check_rc==2 path.
+- **What failed:** None.
+- **Remember next run:** Old transcripts (pre-batch3) don't have rate_limited in _meta. score.py handles this via inline detection from result text (rate_limited = meta["rate_limited"] if "rate_limited" in meta else inline check). Any future _meta field added for detection should also have a fallback in score.py for re-scoring existing runs.
+
+## 2026-07-15 16:15 — dev-team-auto — Item 2: Retry rate-limited runs with bounded backoff
+- **Outcome:** DONE — 1 attempt, full track, branch feat/harness-batch3, commit a3e1921
+- **What happened:** Added RATE_LIMIT_MAX_RETRIES=3, rate_limit_backoff_seconds(attempt) → 30s/60s/120s±20%, retry loop in run_one() wrapping the subprocess call. Loop exits on success, auth_error, or timeout. 8 new tests.
+- **What worked:** Wrapping the subprocess block in a for loop with `break` at success or non-retryable condition; `continue` on 429. Clean logic.
+- **What failed:** None.
+- **Remember next run:** The retry loop re-parses the transcript on each attempt (needed to detect rate limit). This is intentional — parse after each attempt, not once at the end. The `events` list from multi-turn runs should be reset between attempts (it is, since _parse_stream is called fresh each time).
+
+## 2026-07-15 16:30 — dev-team-auto — Item 3: Re-score iteration 4's existing transcripts
+- **Outcome:** DONE — trivial track, branch feat/harness-batch3, commit 8d7db5c
+- **What happened:** Re-ran score.py over existing runs/ dir. 28 Opus 429 runs now infra_error=True. Cross-model comparison shows real data (Opus r1 3/13 from analysis tasks that actually ran). Saved as scorecards/20260715T151129Z-483c1d0-rescored.{md,scores.json}.
+- **What worked:** Inline rate-limit detection in score.py (fallback for old transcripts without _meta.rate_limited).
+- **What failed:** Old transcripts had auth_error=False and no rate_limited field — needed the inline detection fallback. This was discovered during re-score.
+- **Remember next run:** pir-workload-feature Sonnet runs show WORKSPACE_DIR infra in re-score — the workspace dirs are cleaned up and check.sh can't run. Re-scoring coding tasks with workspace requirements always shows infra_error. Only original score (with live ws dirs) gives real pass/fail for those tasks. Don't be confused by all-infra pir results in re-scored data.
+
+## 2026-07-15 16:45 — dev-team-auto — Item 4: Make pir-workload-feature deterministic or mark it noisy
+- **Outcome:** DONE — light track, branch feat/harness-batch3, commit 800d5f9
+- **What happened:** Restored fresh workspace from cf84a6b^. Ran check.sh 5 times on correct impl (5/5 PASS) and wrong impl (5/5 FAIL). Inspected _meta.skill_fired for all iter-4 pir Sonnet runs: skill_fired=False at ALL rungs including rung4. Results recorded in tasks/coding/CONTRACT-NOTE.md section D.
+- **What worked:** Fresh workspace restore + 5-run determinism check. skill_fired field already present in transcripts.
+- **What failed:** None.
+- **Remember next run:** baseball-research skill never fired at rung4 in iter4 (skill_fired=False all 3 repeats). The r2→r3/r4 regression is a routing failure, NOT evidence against the skill. Do NOT prune baseball-research based on iter-4 data. Next session should investigate WHY routing fails at rung4 — is the skill path config wrong? Does the prompt need to mention baseball research more explicitly?
+
+## 2026-07-15 17:00 — dev-team-auto — Item 5: Draft candidate discriminating tasks
+- **Outcome:** DONE — light track, branch feat/harness-batch3, commit 9f07c76
+- **What happened:** Created 3 NEEDS-VALIDATION drafts in tasks/_draft/knowledge/: dt-qa-verdict-format (rung4 — VERDICT: PASS/FAIL format and gate mode distinction), dt-review-severity-policy (rung4 — Critical/Important blocks vs Minor non-blocking), memory-terse-response-policy (rung3 — no trailing summaries). Verified 0 drafts in scored matrix (17 scored tasks unchanged). REVIEW.md updated.
+- **What worked:** Targeting system-specific formats (VERDICT:) and counter-intuitive rules (Minor doesn't re-loop; no trailing summaries). These are the highest-confidence discriminators.
+- **What failed:** None in authoring.
+- **Remember next run:** dt-review-severity-policy has high discrimination confidence (low risk) because the Minor-doesn't-re-loop policy is very counter-intuitive vs standard code review. memory-terse-response-policy has medium risk — validate rung1 first; Claude 4.x may already be terse. Validation process documented in tasks/_draft/REVIEW.md.
