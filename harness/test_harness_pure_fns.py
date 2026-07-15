@@ -1,5 +1,5 @@
-"""Tests for three pure functions in run_matrix: detect_skill_fired, _parse_stream,
-looks_like_auth_error.
+"""Tests for pure functions in run_matrix: detect_skill_fired, _parse_stream,
+looks_like_auth_error, looks_like_rate_limit.
 
 Run: python3 harness/test_harness_pure_fns.py
 """
@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_matrix import detect_skill_fired, _parse_stream, looks_like_auth_error  # noqa: E402
+from run_matrix import detect_skill_fired, _parse_stream, looks_like_auth_error, looks_like_rate_limit  # noqa: E402
 
 
 def check(label, got, want):
@@ -151,6 +151,43 @@ def test_looks_like_auth_error_file_not_found():
     check("looks_like_auth_error: FileNotFoundError → False", result, False)
 
 
+# ---------------------------------------------------------------------------
+# looks_like_rate_limit
+# ---------------------------------------------------------------------------
+
+def test_looks_like_rate_limit_iter4_429_string():
+    # The exact result string from iteration 4's 429 transcripts.
+    result = looks_like_rate_limit(
+        "", "", {"result": "API Error: Request rejected (429) · This request would exceed your account's rate limit."}
+    )
+    check("looks_like_rate_limit: iter4 429 string in result → True", result, True)
+
+
+def test_looks_like_rate_limit_429_in_stdout():
+    # 429 can appear in raw stdout (one-shot path) before transcript is parsed.
+    result = looks_like_rate_limit("HTTP 429 Too Many Requests", "", {"result": ""})
+    check("looks_like_rate_limit: '429' in stdout → True", result, True)
+
+
+def test_looks_like_rate_limit_exceed_account():
+    result = looks_like_rate_limit("", "", {"result": "would exceed your account quota"})
+    check("looks_like_rate_limit: 'exceed your account' in result → True", result, True)
+
+
+def test_looks_like_rate_limit_plain_task_result():
+    # A normal successful result must not trigger rate-limit detection.
+    result = looks_like_rate_limit("", "", {"result": "The acute:chronic workload ratio is 1.24"})
+    check("looks_like_rate_limit: normal task result → False", result, False)
+
+
+def test_looks_like_auth_error_still_routes_correctly():
+    # Regression: an auth string must still trip looks_like_auth_error, not only rate_limit.
+    auth_result = looks_like_auth_error("", "", {"result": "authentication_error: invalid key"})
+    check("regression: auth string → looks_like_auth_error True", auth_result, True)
+    rate_result = looks_like_rate_limit("", "", {"result": "authentication_error: invalid key"})
+    check("regression: auth string → looks_like_rate_limit False", rate_result, False)
+
+
 if __name__ == "__main__":
     test_detect_skill_fired_match()
     test_detect_skill_fired_no_match()
@@ -166,5 +203,11 @@ if __name__ == "__main__":
     test_looks_like_auth_error_unauthorized()
     test_looks_like_auth_error_unrelated_error()
     test_looks_like_auth_error_file_not_found()
+
+    test_looks_like_rate_limit_iter4_429_string()
+    test_looks_like_rate_limit_429_in_stdout()
+    test_looks_like_rate_limit_exceed_account()
+    test_looks_like_rate_limit_plain_task_result()
+    test_looks_like_auth_error_still_routes_correctly()
 
     print("ALL PASS")

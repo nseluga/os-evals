@@ -262,6 +262,27 @@ def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
     return any(p in hay for p in _AUTH_ERR_PATTERNS)
 
 
+_RATE_LIMIT_PATTERNS = (
+    "rate limit",
+    "rate_limit",
+    "429",
+    "exceed your account",
+    "overloaded_error",
+    "request rejected",
+)
+
+
+def looks_like_rate_limit(stdout: str, stderr: str, transcript: dict) -> bool:
+    """Detect a 429 rate-limit failure so it can be flagged infra (not a task fail).
+
+    Sequential Opus runs drain the account rate budget; a 429 is infra failure, not
+    evidence about the task. score.py maps this to check_rc==2 (unscoreable), same
+    as auth errors. Checked before auth_error so the tighter class wins first.
+    """
+    hay = f"{stdout}\n{stderr}\n{transcript.get('result', '')}".lower()
+    return any(p in hay for p in _RATE_LIMIT_PATTERNS)
+
+
 def _ensure_git_repo(ws_dir: Path) -> None:
     """Make ws_dir a self-contained git repo so orchestrator skills can branch/worktree.
 
@@ -409,6 +430,7 @@ def run_one(
 
     skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
     auth_error = looks_like_auth_error(stdout, stderr, transcript)
+    rate_limited = looks_like_rate_limit(stdout, stderr, transcript)
 
     transcript["_meta"] = {
         "task": task,
@@ -425,6 +447,7 @@ def run_one(
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
         "auth_error": auth_error,
+        "rate_limited": rate_limited,
         "num_events": len(events),
         "repeat_index": repeat_index if repeat_total > 1 else None,
         "repeat_total": repeat_total if repeat_total > 1 else None,

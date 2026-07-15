@@ -130,10 +130,17 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     multi_turn = meta.get("multi_turn", False)
     timed_out = meta.get("timed_out", False)
 
-    # OAuth-expiry / auth failure detected mid-run is infra, not a task failure. Map it
-    # to the check_rc==2 (unscoreable) convention WITHOUT running check.sh — a token that
-    # died mid-run tells us nothing about the task.
-    if meta.get("auth_error"):
+    # Auth/OAuth-expiry or 429 rate-limit detected mid-run is infra, not a task failure.
+    # Map both to check_rc==2 (unscoreable) WITHOUT running check.sh — neither tells us
+    # anything about the task. Rate-limit is checked first; auth takes precedence if both.
+    infra_label = (
+        "rate-limit (429) detected mid-run — infra, not a task fail"
+        if meta.get("rate_limited") and not meta.get("auth_error")
+        else "auth/OAuth error detected mid-run (see _meta.stderr)"
+        if meta.get("auth_error")
+        else None
+    )
+    if infra_label:
         repeat_index = meta.get("repeat_index")
         repeat_total = meta.get("repeat_total")
         if repeat_index is None:
@@ -149,7 +156,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
             "passed": False,
             "check_rc": 2,
             "infra_error": True,
-            "check_output": "auth/OAuth error detected mid-run (see _meta.stderr)",
+            "check_output": infra_label,
             "result_snippet": transcript.get("result", "")[:200],
             "curated_skill": task_meta["curated_skill"],
             "category": task_meta["category"],
