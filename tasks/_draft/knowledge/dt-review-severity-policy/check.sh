@@ -1,40 +1,65 @@
 #!/bin/bash
 # check.sh — dt-review-severity-policy
-# Tests whether the model knows that Critical AND Important block exit (require re-QA),
-# while Minor findings are applied without looping.
+#
+# Key discriminator: Critical AND Important both block exit (require re-QA);
+# Minor is applied once by dt-fix without looping. Generic advice hedges
+# Important as situational, only Critical firmly blocks.
 set -uo pipefail
 
 input=$(cat)
 
-# PASS condition 1: both Critical and Important must be named as blocking
-if ! echo "$input" | grep -qi "critical"; then
-    echo "FAIL: response does not mention Critical as blocking" >&2
-    exit 1
-fi
-if ! echo "$input" | grep -qi "important"; then
-    echo "FAIL: response does not mention Important as blocking" >&2
-    exit 1
-fi
+python3 - "$input" <<'PY'
+import sys, re
 
-# PASS condition 2: Minor must be described as non-blocking (applied without re-QA)
-# Accept: "minor", "without looping", "applied once", "don't block", "not block", "skip re-qa"
-if ! echo "$input" | grep -qi "minor"; then
-    echo "FAIL: response does not mention Minor severity" >&2
-    exit 1
-fi
+text = sys.argv[1].lower()
+sentences = re.split(r'[.!?\n]', text)
 
-# PASS condition 3: Minor must be distinguished as NOT requiring a re-QA pass
-# Negative check: if the response says minor ALSO loops or requires re-QA, fail
-if echo "$input" | grep -qi "minor.*loop\|minor.*re-qa\|minor.*block\|minor.*require.*qa"; then
-    echo "FAIL: response incorrectly says Minor findings require a QA loop" >&2
-    exit 1
-fi
+def fail(msg):
+    print(f"FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
 
-# PASS condition 4: Minor must be described as applied (dt-fix applies them)
-if ! echo "$input" | grep -qiE "(minor.*(applied|fix|once|without|skip)|applied.*minor|(dt-fix|fixer).*minor|minor.*(dt-fix|fixer))"; then
-    echo "FAIL: response does not describe Minor as applied without looping" >&2
-    exit 1
-fi
+if "critical" not in text:
+    fail("response does not mention Critical findings")
 
-echo "PASS: response correctly distinguishes Critical/Important (blocking) from Minor (applied, no loop)"
-exit 0
+# KEY DISCRIMINATOR: Important must appear in a sentence that contains a blocking
+# keyword (block, must, require, loop, re-qa) WITHOUT hedging words (optional,
+# situational, discretion, might, may, allow, depends, exceptions, generally).
+BLOCK_WORDS = re.compile(r'\b(block|blocks|must|require|requires|loop|re.qa|re-run|prevents|cannot mark done)\b')
+HEDGE_WORDS  = re.compile(r'\b(optional|situational|discretion|exception|allow|might|may|could|depends|up to|generally|typical)\b')
+
+important_blocks = False
+for s in sentences:
+    if "important" in s and BLOCK_WORDS.search(s) and not HEDGE_WORDS.search(s):
+        important_blocks = True
+        break
+
+# Also accept: "critical and important" or "important and critical" close together
+# in the SAME sentence with a blocking word in that sentence.
+if not important_blocks:
+    for s in sentences:
+        if "critical" in s and "important" in s and BLOCK_WORDS.search(s):
+            important_blocks = True
+            break
+
+if not important_blocks:
+    fail("Important not described as blocking — generic advice hedges Important as situational; Nate's loop treats both Critical and Important as blocking (must re-QA)")
+
+if "minor" not in text:
+    fail("response does not mention Minor severity tier")
+
+# Minor must appear in a sentence describing it as applied without a QA loop.
+APPLIED_WORDS = re.compile(r'\b(applied|fix|once|without|no loop|skip|non.blocking|dont loop|doesn.t loop|no re.qa)\b')
+LOOP_WORDS    = re.compile(r'\b(must|require|loops back|re.qa|blocks|block)\b')
+
+minor_no_loop = False
+for s in sentences:
+    if "minor" in s and APPLIED_WORDS.search(s) and not LOOP_WORDS.search(s):
+        minor_no_loop = True
+        break
+
+if not minor_no_loop:
+    fail("Minor not described as applied once without looping back — response should say Minor findings are applied by dt-fix without another QA pass")
+
+print("PASS: response correctly shows Critical+Important block (re-QA required) and Minor applied without loop")
+sys.exit(0)
+PY

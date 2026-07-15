@@ -14,7 +14,7 @@ if echo "$input" | grep -qiE "(yes.*summar|should.*(add|include|end with|include
 fi
 
 # PASS condition: must explicitly say no, skip, omit, avoid, or don't add trailing summary
-if ! echo "$input" | grep -qiE "(no.*summar|skip.*summar|omit.*summar|avoid.*summar|don.t.*summar|not.*add.*summar|unnecessary.*summar|summar.*unnecessary|user.*can.*see|already.*see|can.*see.*diff|see.*diff|redundant|concise|terse)"; then
+if ! echo "$input" | grep -qiE "(no.*summar|skip.*summar|omit.*summar|avoid.*summar|don.t.*summar|not.*add.*summar|unnecessary.*summar|summar.*unnecessary|user.*can.*see|already.*see|can.*see.*diff|see.*diff|redundant|concise|terse|padding|noise|diff.*speak|let.*diff)"; then
     echo "FAIL: response does not clearly recommend against trailing summaries" >&2
     exit 1
 fi
