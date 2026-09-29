@@ -1,0 +1,3 @@
+{
+ "result": "I don't have a way to enumerate the skills without tools, but based on what Claude Code typically ships with I can tell you the common ones: `simplify` and `code-review` for reviewing diffs, `loop` for recurring prompts, `schedule` for cloud routines, and `init` for creating a CLAUDE.md file.\n\nIf you have custom skills installed under ~/.claude/skills they would show up in the session's skill listing, but I can't see one from here, so I can't name any of them for you."
+}

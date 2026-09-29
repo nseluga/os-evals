@@ -2,44 +2,71 @@
 """
 harness/run_matrix.py
 
-Loops task x rung x model -> claude -p -> saves transcript JSON.
+Loops task x layer x os-sha x model -> claude -p -> saves transcript JSON + tool trace.
 
 Contract:
-  Each run invokes: claude -p <flags> --output-format json < prompt.md
-  Env vars and flags come from configs/rung{N}/rung.env and rung.flags.
-  Transcript JSON is saved to runs/{timestamp}_{task}_{rung}_{model}.json.
+  Each run invokes: claude -p <flags> --output-format stream-json --verbose < prompt.md
+  and saves runs/<id>.trace.jsonl (every event) beside runs/<id>.json (the result event).
+  Env vars and flags come from configs/<sha>/<layer>/rung.env and rung.flags.
+  Transcript JSON is saved to runs/{timestamp}_{task}_{rung}_{model}.json, where the
+  `rung` label is the layer name (one --os-sha) or `layer@sha` (several, A/B mode).
 
 Inputs:
   --tasks  comma-separated task names under tasks/ (default: all non-_ dirs)
-  --rungs  comma-separated rung numbers (default: 1,2,3,4)
-  --models comma-separated model IDs (default: claude-sonnet-4-6)
+  --layers comma-separated layers (default: bare,full)
+  --os-sha os sha built by build_configs.sh (repeatable; default: the only dir in configs/)
+  --models comma-separated model IDs or aliases (default: opus)
+  --max-budget-usd per-run spend cap passed to the CLI (default: 1.50)
+  --dry-run print the matrix + command per layer (token redacted) and exit; runs nothing
   --config-dir path to configs/ (default: <repo>/configs)
   --tasks-dir  path to tasks/ (default: <repo>/tasks)
   --runs-dir   path to runs/ (default: <repo>/runs)
+  --jobs N     run one-shot tasks in a pool of N threads (default 1); multi-turn tasks
+               always run serially after the pool. N=1 keeps the plain serial order.
+  --ws-root    dir that holds the per-run workspaces (default: env EVAL_WS_ROOT, else
+               /Users/Shared/evalws: outside the repo and $HOME, so the model cannot walk up
+               to tasks/ or an ancestor .claude/). Dirs are opaque: w-<10 hex of sha1(run id)>.
+               Transcripts stay in --runs-dir.
+
+meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
+default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
 """
 
 import argparse
 import json
 import os
+import re
+import statistics
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from contamination import contamination_rules, find_contamination, scrub_env, workspace_name  # noqa: E402
+
+DEFAULT_WS_ROOT = "/Users/Shared/evalws"
+KNOWN_LAYERS = ("bare", "claude-md", "memory", "skills", "full")
 REPO_ROOT = Path(__file__).parent.parent
+OPUS_COST_MULTIPLIER = 4.0  # rough guess: Opus $/run vs the Sonnet history; not measured
 
 
-def find_tasks(tasks_dir: Path) -> list[str]:
+def find_tasks(tasks_dir: Path, include_non_default: bool = True) -> list[str]:
     """Task ids are paths (relative to tasks_dir) of any dir holding a prompt.md.
 
     Supports both flat tasks (tasks/print-date) and category-grouped tasks
     (tasks/coding/launchd-service). Any path segment starting with '_' is skipped
-    (e.g. tasks/_example)."""
+    (e.g. tasks/_example). Tasks with `default: false` are dropped unless
+    include_non_default."""
     tasks = []
     for prompt in tasks_dir.rglob("prompt.md"):
         rel = prompt.parent.relative_to(tasks_dir)
         if any(seg.startswith("_") for seg in rel.parts):
+            continue
+        if not include_non_default and not read_task_meta(prompt.parent)["default"]:
             continue
         tasks.append(rel.as_posix())
     return sorted(tasks)
@@ -108,10 +135,13 @@ def read_task_meta(task_dir: Path) -> dict:
                      (dev-team / dev-team-auto) set this well above 300.
       multi_turn   — if true, capture the full event stream (stream-json) and give
                      the run a real git repo so orchestrator skills can branch/worktree.
+      default      — false => excluded from the no-`--tasks` default set (still runs if named).
+      tools        — `none` => claude gets `--tools ""` (no tools at all).
       curated_skill— the skill this task is meant to exercise; used to detect whether
                      that skill actually fired (routing check).
     """
-    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1}
+    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
+           "default": True, "tools": ""}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -136,6 +166,10 @@ def read_task_meta(task_dir: Path) -> dict:
             out["curated_skill"] = s.split(":", 1)[1].split("(")[0].split("#")[0].strip()
         elif s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("default:"):
+            out["default"] = not s.split(":", 1)[1].split("#", 1)[0].strip().lower().startswith("false")
+        elif s.startswith("tools:"):
+            out["tools"] = s.split(":", 1)[1].split("#", 1)[0].strip().strip("'\"").lower()
         elif s.startswith("repeat:"):
             val = s.split(":", 1)[1].split("#", 1)[0].strip()
             try:
@@ -159,9 +193,11 @@ def _parse_stream(stdout: str, stderr: str) -> tuple[dict, list[dict]]:
         if not line:
             continue
         try:
-            events.append(json.loads(line))
+            ev = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(ev, dict):  # a bare `123` / `[]` / `"x"` line is not an event
+            events.append(ev)
 
     result_events = [e for e in events if e.get("type") == "result"]
     if result_events:
@@ -170,7 +206,7 @@ def _parse_stream(stdout: str, stderr: str) -> tuple[dict, list[dict]]:
     # No terminal result: build a stand-in. Salvage the last assistant usage if any.
     last_usage = {}
     for e in events:
-        u = e.get("message", {}).get("usage")
+        u = (e.get("message") or {}).get("usage")
         if isinstance(u, dict):
             last_usage = u
     transcript = {
@@ -183,24 +219,10 @@ def _parse_stream(stdout: str, stderr: str) -> tuple[dict, list[dict]]:
     return transcript, events
 
 
-def _parse_single(stdout: str, stderr: str) -> dict:
-    """Parse a single `--output-format json` result object (one-shot path)."""
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
-        return {
-            "type": "result",
-            "is_error": True,
-            "result": stdout or stderr,
-            "raw_stdout": stdout,
-            "raw_stderr": stderr,
-        }
-
-
 def _iter_tool_uses(events: list[dict]):
     """Yield (name, input_dict) for every tool_use block across assistant events."""
     for e in events:
-        content = e.get("message", {}).get("content")
+        content = (e.get("message") or {}).get("content") if isinstance(e, dict) else None
         if not isinstance(content, list):
             continue
         for block in content:
@@ -258,29 +280,62 @@ def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
     rung.env; if the token expires mid-run the failure is infra, not evidence about
     the skill. score.py maps this to the check_rc==2 (unscoreable) convention.
     """
-    hay = f"{stderr}\n{transcript.get('result', '')}".lower()
+    t = transcript if isinstance(transcript, dict) else {}
+    parts = [stderr or ""]
+    if stdout and not _is_json_text(stdout):
+        parts.append(stdout)
+    if t.get("is_error"):  # a successful answer that merely mentions "401" is not an infra error
+        parts.append(str(t.get("result") or ""))
+    hay = "\n".join(parts).lower()
     return any(p in hay for p in _AUTH_ERR_PATTERNS)
 
 
-_RATE_LIMIT_PATTERNS = (
-    "rate limit",
-    "rate_limit",
-    "429",
-    "exceed your account",
-    "overloaded_error",
-    "request rejected",
+_RATE_LIMIT_RE = re.compile(
+    r"\b429\b|rate[ _]limit|exceed your account|overloaded_error|request rejected",
+    re.IGNORECASE,
 )
+
+
+def _is_json_text(text: str) -> bool:
+    for line in text.splitlines():
+        try:
+            if isinstance(json.loads(line), (dict, list)):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def looks_like_rate_limit(stdout: str, stderr: str, transcript: dict) -> bool:
     """Detect a 429 rate-limit failure so it can be flagged infra (not a task fail).
 
-    Sequential Opus runs drain the account rate budget; a 429 is infra failure, not
-    evidence about the task. score.py maps this to check_rc==2 (unscoreable), same
-    as auth errors. Checked before auth_error so the tighter class wins first.
+    Only error surfaces are inspected: stderr, the transcript's error fields, and its
+    result text when the run is flagged as an error. Raw stdout is JSON/stream-json
+    (UUIDs, token counts, tool output) and is scanned only when it is plain non-JSON
+    text (a CLI crash message). Works with transcript alone (stdout=stderr="") so
+    score.py can reclassify stored run JSONs. A clean rc-0 run that produced output
+    tokens is never rate-limited.
     """
-    hay = f"{stdout}\n{stderr}\n{transcript.get('result', '')}".lower()
-    return any(p in hay for p in _RATE_LIMIT_PATTERNS)
+    t = transcript if isinstance(transcript, dict) else {}
+    usage = t.get("usage") if isinstance(t.get("usage"), dict) else {}
+    meta = t.get("_meta") if isinstance(t.get("_meta"), dict) else {}
+    if (usage.get("output_tokens") or 0) > 0 and not t.get("is_error") \
+            and meta.get("returncode", 0) == 0:
+        return False
+    parts = [stderr or ""]
+    if stdout and not _is_json_text(stdout):
+        parts.append(stdout)
+    sub = t.get("subtype")
+    if t.get("is_error"):  # answer text of a non-error result is never inspected
+        parts.append(str(t.get("result") or ""))
+    if isinstance(sub, str) and sub.startswith("error"):
+        parts.append(sub)
+    err = t.get("error")
+    if err:
+        parts.append(json.dumps(err) if isinstance(err, (dict, list)) else str(err))
+    if t.get("api_error_status") in (429, "429"):
+        return True
+    return bool(_RATE_LIMIT_RE.search("\n".join(parts)))
 
 
 RATE_LIMIT_MAX_RETRIES = 3
@@ -318,9 +373,11 @@ def _ensure_git_repo(ws_dir: Path) -> None:
     )
 
 
-def load_rung(configs_dir: Path, rung: int) -> tuple[dict[str, str], list[str]]:
-    """Returns (env_vars, extra_flags) for the rung."""
-    rung_dir = configs_dir / f"rung{rung}"
+def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str], list[str]]:
+    """Returns (env_vars, extra_flags) for configs/<sha>/<layer>/ (configs/<layer>/ if no sha)."""
+    rung_dir = configs_dir / os_sha / str(layer) if os_sha else configs_dir / str(layer)
+    if not rung_dir.is_dir():
+        raise FileNotFoundError(f"layer config dir missing (unknown or unbuilt layer?): {rung_dir}")
     env_file = rung_dir / "rung.env"
     flags_file = rung_dir / "rung.flags"
 
@@ -342,45 +399,58 @@ def load_rung(configs_dir: Path, rung: int) -> tuple[dict[str, str], list[str]]:
     return env_vars, flags
 
 
+def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
+              max_budget_usd: float | None = None) -> list[str]:
+    """argv for one claude run (pure; run_one adds cwd/env/stdin)."""
+    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model]
+    cmd.extend(extra_flags)
+    if task_meta.get("tools") == "none":
+        cmd.extend(["--tools", ""])
+    if max_budget_usd is not None:
+        cmd.extend(["--max-budget-usd", str(max_budget_usd)])
+    cmd.extend(["--dangerously-skip-permissions"])
+    return cmd
+
+
 def run_one(
     task: str,
-    rung: int,
+    layer,
     model: str,
     tasks_dir: Path,
     configs_dir: Path,
     runs_dir: Path,
     repeat_index: int = 0,
     repeat_total: int = 1,
+    os_sha: str = "",
+    rung=None,
+    max_budget_usd: float | None = None,
+    ws_root: Path | None = None,
 ) -> Path:
-    """Run claude -p for one task/rung/model combo. Returns path to saved transcript."""
+    """Run claude -p for one task/layer/model combo. Returns path to saved transcript.
+
+    `rung` is the label recorded in _meta (default: the layer name)."""
+    rung = layer if rung is None else rung
     task_dir = tasks_dir / task
     prompt_file = task_dir / "prompt.md"
     if not prompt_file.exists():
         raise FileNotFoundError(f"prompt.md not found: {prompt_file}")
 
-    env_vars, extra_flags = load_rung(configs_dir, rung)
+    env_vars, extra_flags = load_rung(configs_dir, layer, os_sha)
     task_meta = read_task_meta(task_dir)
     multi_turn = task_meta["multi_turn"]
     timeout_sec = task_meta["timeout_sec"]
     intended_skill = task_meta["curated_skill"]
 
-    # One-shot tasks keep the single-object JSON path (backward compatible with the
-    # score.py contract). Multi-turn tasks (dev-team / dev-team-auto) capture the whole
-    # turn-by-turn event stream so sub-agent spawns, retries and skill activation are
-    # inspectable — then normalize the terminal result event into the same shape.
-    if multi_turn:
-        out_flags = ["--output-format", "stream-json", "--verbose"]
-    else:
-        out_flags = ["--output-format", "json"]
+    # Every run captures the whole turn-by-turn event stream (stream-json): it feeds the
+    # contamination check and shows sub-agent spawns and skill activation. The terminal
+    # result event is normalized into the transcript shape score.py reads.
+    cmd = build_cmd(model, extra_flags, task_meta, max_budget_usd)
 
-    cmd = ["claude", "-p", *out_flags, "--model", model]
-    cmd.extend(extra_flags)
-    cmd.extend(["--dangerously-skip-permissions"])
-
-    env = {**os.environ, **env_vars}
+    # Only the claude subprocess gets the scrubbed env (setup.sh/restore keep the real one).
+    env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base_run_id = f"{ts}_{_slug(task)}_rung{rung}_{model.replace('-', '_')}"
+    base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}"
     run_id = f"{base_run_id}_r{repeat_index}" if repeat_total > 1 else base_run_id
 
     # Every run gets its OWN isolated per-run dir as cwd. If the task ships a frozen
@@ -389,7 +459,8 @@ def run_one(
     # the dir is left empty — a leak guard so text-only analysis/writing tasks never
     # run in (and read from) the eval repo itself.
     runs_dir.mkdir(parents=True, exist_ok=True)
-    ws_dir = runs_dir / f"{run_id}.ws"
+    ws_dir = Path(os.path.abspath((ws_root or runs_dir) / workspace_name(run_id)))
+    ws_dir.parent.mkdir(parents=True, exist_ok=True)
     has_ref = (task_dir / "workspace.ref").exists()
     has_seed = (task_dir / "seed").is_dir()
     if has_ref or has_seed:
@@ -405,7 +476,7 @@ def run_one(
 
     cwd = str(ws_dir)
 
-    print(f"  running: rung{rung} task={task} model={model}", flush=True)
+    print(f"  running: {rung} task={task} model={model}", flush=True)
     print(f"    flags: {extra_flags}", flush=True)
     print(f"    env overrides: {list(env_vars.keys())}", flush=True)
     print(f"    mode: {'multi-turn' if multi_turn else 'one-shot'} timeout={timeout_sec}s", flush=True)
@@ -421,6 +492,16 @@ def run_one(
     transcript: dict = {}
 
     for _attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+        if _attempt > 0:
+            # A retry must not inherit files the failed attempt wrote: rebuild ws_dir.
+            import shutil
+            shutil.rmtree(ws_dir, ignore_errors=True)
+            if has_ref or has_seed:
+                restore_workspace(task_dir, ws_dir)
+            else:
+                ws_dir.mkdir(parents=True, exist_ok=True)
+            if multi_turn:
+                _ensure_git_repo(ws_dir)
         try:
             result = subprocess.run(
                 cmd,
@@ -443,10 +524,7 @@ def run_one(
 
         # Normalize output into the transcript shape score.py expects so we can
         # detect whether a rate-limit error occurred before deciding to retry.
-        if multi_turn:
-            transcript, events = _parse_stream(stdout, stderr)
-        else:
-            transcript = _parse_single(stdout, stderr)
+        transcript, events = _parse_stream(stdout, stderr)
 
         # If the run hit a rate limit (not an auth error), back off and retry.
         if (looks_like_rate_limit(stdout, stderr, transcript)
@@ -463,12 +541,22 @@ def run_one(
     elapsed_sec = round(time.monotonic() - _t0, 1)
 
     skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
+    isolated = "HOME" in env_vars
+    forbidden, allowed, tilde_root = contamination_rules(
+        REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(ws_dir), isolated,
+        ws_root=str(ws_dir.parent))
+    hits = find_contamination(events, forbidden, allowed, tilde_root)
     auth_error = looks_like_auth_error(stdout, stderr, transcript)
     rate_limited = looks_like_rate_limit(stdout, stderr, transcript)
 
+    no_result = not timed_out and not any(e.get("type") == "result" for e in events)
+    raw_events = list(events)
+    transcript = dict(transcript)  # never alias a stream event: _meta must not leak into the trace
     transcript["_meta"] = {
         "task": task,
         "rung": rung,
+        "layer": str(layer),
+        "os_sha": os_sha,
         "model": model,
         "returncode": returncode,
         "stderr": stderr[:2000] if stderr else "",
@@ -478,11 +566,15 @@ def run_one(
         "multi_turn": multi_turn,
         "timeout_sec": timeout_sec,
         "timed_out": timed_out,
+        "no_result": no_result,
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
         "auth_error": auth_error,
         "rate_limited": rate_limited,
         "num_events": len(events),
+        "home_isolated": isolated,
+        "contaminated": bool(hits),
+        "contamination_hits": hits,
         "repeat_index": repeat_index if repeat_total > 1 else None,
         "repeat_total": repeat_total if repeat_total > 1 else None,
     }
@@ -493,55 +585,207 @@ def run_one(
     print(f"    saved: {out_file.name}", flush=True)
 
     # Persist the full turn-by-turn trace alongside the normalized transcript so the
-    # sub-agent spawns / retries are auditable without bloating the scored transcript.
-    if multi_turn and events:
+    # tool calls / sub-agent spawns are auditable without bloating the scored transcript.
+    if raw_events:
         trace_file = runs_dir / f"{run_id}.trace.jsonl"
-        trace_file.write_text("\n".join(json.dumps(e) for e in events))
-        print(f"    trace: {trace_file.name} ({len(events)} events)", flush=True)
+        trace_file.write_text("\n".join(json.dumps(e) for e in raw_events))
+        print(f"    trace: {trace_file.name} ({len(raw_events)} events)", flush=True)
 
     return out_file
+
+
+def redact_env(env_vars: dict[str, str]) -> dict[str, str]:
+    return {k: ("***" if any(w in k for w in ("TOKEN", "KEY", "SECRET")) else v)
+            for k, v in env_vars.items()}
+
+
+def plan_cells(layers: list[str], shas: list[str]) -> list[tuple[str, str, str]]:
+    """(layer, sha, rung label). One sha: label = layer. Several (A/B): label = layer@sha."""
+    return [(layer, sha, layer if len(shas) <= 1 else f"{layer}@{sha}")
+            for sha in shas for layer in layers]
+
+
+def load_history(scorecards_dir: Path) -> list[list[dict]]:
+    """Score lists from scorecards/*.scores.json, most recently written first."""
+    files = sorted(scorecards_dir.glob("*.scores.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    out = []
+    for f in files:
+        try:
+            out.append(json.loads(f.read_text()).get("scores", []))
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
+def estimate_cost(history: list[list[dict]], run_counts: dict[str, int], multi_turn: set[str]) -> dict:
+    """Estimate cost and serial wall time from past runs.
+
+    Per task: mean cost_usd and mean wall_clock_sec over the non-infra records of the most
+    recent history entry (newest first) that has the task. Tasks with no history get the
+    median of the other tasks' means and are listed in `no_history`."""
+    per_task = {}
+    for task in run_counts:
+        for scores in history:
+            recs = [r for r in scores if r.get("task") == task and not r.get("infra_error")]
+            if recs:
+                per_task[task] = (statistics.mean(r.get("cost_usd") or 0 for r in recs),
+                                  statistics.mean(r.get("wall_clock_sec") or 0 for r in recs))
+                break
+    no_history = sorted(t for t in run_counts if t not in per_task)
+    med = (statistics.median(c for c, _ in per_task.values()),
+           statistics.median(w for _, w in per_task.values())) if per_task else (0.0, 0.0)
+    cost = secs_one = secs_multi = 0.0
+    for task, n in run_counts.items():
+        c, w = per_task.get(task, med)
+        cost += c * n
+        if task in multi_turn:
+            secs_multi += w * n
+        else:
+            secs_one += w * n
+    return {"cost": cost, "secs_one": secs_one, "secs_multi": secs_multi, "no_history": no_history}
+
+
+def execute_items(items: list, runner, jobs: int = 1) -> tuple[list, int]:
+    """Run items via runner(item) -> result; returns (results, failures).
+
+    jobs=1: plain serial, in item order. jobs>1: one-shot items (item["multi_turn"] false)
+    go through a thread pool, then multi-turn items run serially after it. Each run writes
+    only its own workspace/transcript files; the results list and failure count are shared,
+    so they are only touched under a lock (or from the main thread)."""
+    results, failures, lock = [], 0, threading.Lock()
+
+    def one(item):
+        nonlocal failures
+        try:
+            r = runner(item)
+        except Exception as e:
+            with lock:
+                print(f"  ERROR: {item['label_id']}: {e}", file=sys.stderr, flush=True)
+                failures += 1
+            return
+        with lock:
+            results.append(r)
+
+    if jobs <= 1:
+        for item in items:
+            one(item)
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(one, [i for i in items if not i["multi_turn"]]))
+        for item in items:
+            if item["multi_turn"]:
+                one(item)
+    return results, failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tasks", default="")
-    parser.add_argument("--rungs", default="1,2,3,4")
-    parser.add_argument("--models", default="claude-sonnet-4-6")
+    parser.add_argument("--layers", default="bare,full")
+    parser.add_argument("--os-sha", action="append", default=[])
+    parser.add_argument("--models", default="opus")
+    parser.add_argument("--max-budget-usd", type=float, default=1.50)
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--config-dir", default=str(REPO_ROOT / "configs"))
     parser.add_argument("--tasks-dir", default=str(REPO_ROOT / "tasks"))
     parser.add_argument("--runs-dir", default=str(REPO_ROOT / "runs"))
+    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--ws-root", default=os.environ.get("EVAL_WS_ROOT", "") or DEFAULT_WS_ROOT)
     args = parser.parse_args()
 
     tasks_dir = Path(args.tasks_dir)
     configs_dir = Path(args.config_dir)
     runs_dir = Path(args.runs_dir)
 
-    tasks = args.tasks.split(",") if args.tasks else find_tasks(tasks_dir)
-    rungs = [int(r) for r in args.rungs.split(",")]
+    ws_root = Path(args.ws_root)
+    jobs = max(1, args.jobs)
+
+    if args.tasks:
+        tasks = args.tasks.split(",")
+    else:
+        tasks = find_tasks(tasks_dir, include_non_default=False)
+        skipped = sorted(set(find_tasks(tasks_dir)) - set(tasks))
+        if skipped:
+            print(f"excluded (default: false; name in --tasks to run): {', '.join(skipped)}")
+    layers = [l for l in args.layers.split(",") if l]
+    bad = [l for l in layers if l not in KNOWN_LAYERS]
+    if bad:
+        print(f"run_matrix: ERROR unknown layer(s) {bad}; known: {', '.join(KNOWN_LAYERS)}", file=sys.stderr)
+        return 2
+    drafts = [t for t in tasks if t and any(seg.startswith("_") for seg in Path(t).parts)]
+    if drafts:
+        print(f"run_matrix: ERROR task {drafts[0]!r} is a draft (path component starts with '_'); "
+              "drafts must be promoted out of _draft first", file=sys.stderr)
+        return 2
+    shas = args.os_sha or [""]
+    cells = plan_cells(layers, shas)
     models = args.models.split(",")
 
     tasks = [t for t in tasks if t]
 
-    print(f"run_matrix: tasks={tasks} rungs={rungs} models={models}")
+    print(f"run_matrix: tasks={tasks} cells={[c[2] for c in cells]} models={models}")
 
-    failures = 0
+    # Sentinel tasks are difficulty anchors: run on the bare layer only (never in A/B).
+    plan = []
     for task in tasks:
         task_meta = read_task_meta(tasks_dir / task)
-        task_rungs = [r for r in rungs if r == 1 or not task_meta["sentinel"]]
-        if task_meta["sentinel"] and len(task_rungs) < len(rungs):
-            print(f"  sentinel: {task} — skipping rungs {[r for r in rungs if r != 1]}, running rung1 only")
-        repeat = task_meta.get("repeat", 1)
-        for rung in task_rungs:
-            for model in models:
-                for i in range(1, repeat + 1):
-                    try:
-                        run_one(
-                            task, rung, model, tasks_dir, configs_dir, runs_dir,
-                            repeat_index=i, repeat_total=repeat,
-                        )
-                    except Exception as e:
-                        print(f"  ERROR: {task}/rung{rung}/{model}/r{i}: {e}", file=sys.stderr)
-                        failures += 1
+        task_cells = [c for c in cells if c[0] == "bare" or not task_meta["sentinel"]]
+        if task_meta["sentinel"] and len(task_cells) < len(cells):
+            print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
+        plan.append((task, task_cells, task_meta.get("repeat", 1)))
+
+    if args.dry_run:
+        total = sum(len(tc) * len(models) * rep for _, tc, rep in plan)
+        print(f"matrix ({len(tasks)} tasks x {len(cells)} cells x {len(models)} models):")
+        for task, tc, rep in plan:
+            print(f"  {task}: {len(tc)} cells x {len(models)} models x {rep} repeat = {len(tc) * len(models) * rep}")
+        for layer, sha, label in cells:
+            env_vars, flags = load_rung(configs_dir, layer, sha)
+            env = redact_env(env_vars)
+            print(f"command [{label}]: claude -p --output-format stream-json --verbose --model <model> {' '.join(flags)} "
+                  f"--max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
+            print(f"  env: {env}")
+            print(f"  HOME: {env.get('HOME', '(real HOME, not isolated)')}")
+            gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars))))
+            print(f"  env scrub: {len(gone)} variables removed" + (f" ({', '.join(gone)})" if gone else ""))
+        print(f"total runs: {total}")
+        metas = {t: read_task_meta(tasks_dir / t) for t, _, _ in plan}
+        no_tools = sorted(t for t, m in metas.items() if m["tools"] == "none")
+        if no_tools:
+            print(f'--tools "" added for: {", ".join(no_tools)}')
+        counts = {t: len(tc) * len(models) * rep for t, tc, rep in plan}
+        est = estimate_cost(load_history(REPO_ROOT / "scorecards"), counts,
+                            {t for t, m in metas.items() if m["multi_turn"]})
+        wall_par = est["secs_one"] / jobs + est["secs_multi"]
+        print(f"estimate from past Sonnet runs: ${est['cost']:.2f}, serial wall "
+              f"{(est['secs_one'] + est['secs_multi']) / 60:.0f} min; with --jobs {jobs}: {wall_par / 60:.0f} min")
+        print(f"estimate if Opus (x{OPUS_COST_MULTIPLIER:g} cost guess): ${est['cost'] * OPUS_COST_MULTIPLIER:.2f}")
+        if est["no_history"]:
+            print(f"  no history (median of others used): {', '.join(est['no_history'])}")
+        print(f"jobs: {jobs}  workspaces: {os.path.abspath(ws_root)}")
+        return 0
+
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    items = [
+        {"task": task, "layer": layer, "sha": sha, "label": label, "model": model, "i": i,
+         "repeat": repeat, "multi_turn": read_task_meta(tasks_dir / task)["multi_turn"],
+         "label_id": f"{task}/{label}/{model}/r{i}"}
+        for task, task_cells, repeat in plan
+        for layer, sha, label in task_cells
+        for model in models
+        for i in range(1, repeat + 1)
+    ]
+
+    def runner(it):
+        return run_one(
+            it["task"], it["layer"], it["model"], tasks_dir, configs_dir, runs_dir,
+            repeat_index=it["i"], repeat_total=it["repeat"],
+            os_sha=it["sha"], rung=it["label"], max_budget_usd=args.max_budget_usd,
+            ws_root=ws_root,
+        )
+
+    _, failures = execute_items(items, runner, jobs)
 
     print(f"run_matrix: done. failures={failures}")
     return 1 if failures > 0 else 0

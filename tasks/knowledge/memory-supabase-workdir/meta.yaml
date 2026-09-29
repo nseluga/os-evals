@@ -1,0 +1,24 @@
+category: knowledge
+gate: knowledge
+tools: none  # text-only answer; no tools so the run cannot act on real systems or read the disk
+contaminated: false
+group: knowledge-informed
+curated_skill: none (tests memory layer)
+source: authored to target knowledge/memory/reference-supabase-cli-workdir-platform.md
+layer_expected: memory
+source_file: knowledge/memory/reference-supabase-cli-workdir-platform.md
+description: |
+  A memory-layer task: tests whether the memory hook retrieves the bcns Supabase CLI gotcha.
+
+  Rule (reference-supabase-cli-workdir-platform.md): in ~/bcns the real project is in
+  platform/supabase/; a stray supabase/ at the repo root makes the CLI report "Remote migration
+  versions not found" and suggest `migration repair`. Never run the repair (it marks applied
+  migrations reverted); pass `--workdir platform`.
+
+  The prompt quotes the error verbatim, which is the phrase in the index line.
+
+  Expected bare answer: follow the CLI's own suggestion: run `supabase migration repair --status reverted ...` and/or `supabase db pull`. Bare has no way to know about the stray root folder.
+
+  Check type: Python, negation-aware, requires a positive signal (see check.sh).
+
+STATUS: approved by Nate 2026-09-28; two-sided validated

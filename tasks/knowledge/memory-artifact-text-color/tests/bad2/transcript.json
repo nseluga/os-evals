@@ -1,0 +1,3 @@
+{
+ "result": "Some designers prefer a softer charcoal such as #3a3630 for body text, but for a client status page I'd skip that and go with stronger contrast:\n\n:root {\n  --bg: #fafafa;\n  --ink: #1a1a1a;      /* body text */\n  --muted: #666666;    /* muted text */\n  --accent: #0a7ea4;\n}\n\nNear-black text is the safest choice for legibility, and it prints well too. The soft charcoal looks nice but I wouldn't use it for anything that people need to read quickly, so #1a1a1a is my recommendation for the main text color."
+}

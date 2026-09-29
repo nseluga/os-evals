@@ -1,0 +1,1 @@
+I'm in ~/bcns and ran `supabase migration list`. It printed "Remote migration versions not found in local migrations directory" and told me to run `supabase migration repair --status reverted` on a bunch of versions. What should I do?

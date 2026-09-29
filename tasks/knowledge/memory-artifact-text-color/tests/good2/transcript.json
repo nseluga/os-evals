@@ -1,0 +1,3 @@
+{
+ "result": "Suggested tokens for the status page:\n\n| Token | Hex |\n| Page background | #fbfaf7 |\n| Body text | #33312c |\n| Muted text | #77726a |\n| Accent | #c2571a |\n\nI picked a dark warm grey for the body text instead of true black, because black on a bright background tends to look stark. The contrast ratio is still well above 7:1, so it's accessible, and the muted grey stays above 4.5:1 for small labels. If the page has a dark theme variant later, mirror the same idea there: soft off-white text rather than pure white, so the two themes feel consistent."
+}

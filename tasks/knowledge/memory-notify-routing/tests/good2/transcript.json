@@ -1,0 +1,3 @@
+{
+ "result": "Here's how I'd split it. When a lead replies asking for a call, the bot emails Brandon, and nobody else; you would just see the outcome later in the database or dashboard. When a lead signs, that's the moment Nate needs to hear about it so onboarding can start, so the signed notice is addressed to you with Brandon in copy.\n\nThe reasoning is that each founder should only get the messages they can do something about. Brandon acts on replies and calls, Nate acts on 'signed, onboard them'. Everything else, like opt-outs or call notes, can stay in the database instead of clogging either inbox."
+}

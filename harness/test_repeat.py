@@ -34,15 +34,18 @@ def check(label, got, want):
 # ---------------------------------------------------------------------------
 
 def test_portfolio_writeup_repeat():
-    """Test 1: writing/portfolio-writeup has repeat=3."""
-    meta = run_matrix_read_task_meta(REPO / "tasks/writing/portfolio-writeup")
-    check("portfolio-writeup repeat", meta["repeat"], 3)
+    """Test 1: a meta.yaml with repeat: 3 (and a trailing comment) parses to 3."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "meta.yaml").write_text("category: writing\nrepeat: 3  # flaky\n")
+        meta = run_matrix_read_task_meta(Path(d))
+    check("fixture repeat", meta["repeat"], 3)
 
 
 def test_pir_workload_repeat():
-    """Test 2: coding/pir-workload-feature has repeat=3."""
+    """Test 2: coding/pir-workload-feature is repeat=1 since 2026-09-28 (cost control)."""
     meta = run_matrix_read_task_meta(REPO / "tasks/coding/pir-workload-feature")
-    check("pir-workload-feature repeat", meta["repeat"], 3)
+    check("pir-workload-feature repeat", meta["repeat"], 1)
 
 
 def test_dashboard_digest_repeat_default():

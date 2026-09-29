@@ -1,0 +1,1 @@
+{"result": "## VERDICT: PASS\nThe tests+behavioral gate mode requires a behavioral smoke pass against the live server, hitting the endpoint, not just running the test suite."}

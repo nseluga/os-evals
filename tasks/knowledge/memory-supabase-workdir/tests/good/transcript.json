@@ -1,0 +1,3 @@
+{
+ "result": "Don't run the repair command. That message is misleading here: the CLI is reading a stray supabase folder at the repo root, not the real project, so it thinks the remote migrations are missing locally. Running `supabase migration repair --status reverted` would mark migrations that are actually applied as reverted, which is the destructive outcome you want to avoid.\n\nThe real Supabase project lives in platform/supabase, so point the CLI at it. Re-run the same command with `--workdir platform`, for example `supabase migration list --workdir platform`, and the local and remote versions should line up. Do the same for `db push` and `functions deploy`."
+}

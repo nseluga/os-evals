@@ -1,5 +1,7 @@
 sentinel: true
 category: coding
+gate: capability
+# gate: insufficient history
 contaminated: false
 group: clean
 source: project-dashboard PLAN.md Item 3.1 (built via /dev-team-auto session 51c6abdf, 2026-07-08)

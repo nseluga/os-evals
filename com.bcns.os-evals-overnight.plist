@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bcns.os-evals-overnight</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/nateseluga/os-evals/overnight.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/nateseluga/os-evals</string>
+  <!-- Month+Day pinned: fires once (2026-09-29 01:00), not every night. If the Mac is asleep, launchd runs it on wake. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Month</key><integer>9</integer>
+    <key>Day</key><integer>29</integer>
+    <key>Hour</key><integer>1</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/nateseluga/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key><string>/Users/nateseluga/os-evals/overnight-logs/launchd.out</string>
+  <key>StandardErrorPath</key><string>/Users/nateseluga/os-evals/overnight-logs/launchd.err</string>
+</dict>
+</plist>

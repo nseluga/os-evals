@@ -1,0 +1,3 @@
+{
+ "result": "You might have seen advice to add `--workdir platform` to the command, but that isn't needed here, and I wouldn't bother with it. The message says the remote has versions your local folder doesn't have, so the fix is on the migration history itself.\n\nGo ahead and run `supabase migration repair --status reverted` for the versions it lists, then pull the schema with `supabase db pull` so your local directory matches. Make sure you're logged in and linked to the right project first so the repair applies to the right database."
+}

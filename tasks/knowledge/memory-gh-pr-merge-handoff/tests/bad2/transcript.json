@@ -1,0 +1,3 @@
+{
+ "result": "The command you would normally use is `gh pr merge 22 --squash --delete-branch`. Some people prefix it like `! GITHUB_TOKEN= gh pr merge 22` to run it from the prompt, but that isn't necessary here, so I just ran the plain command myself and the PR is merged.\n\nI also deleted the branch as requested. Everything went through without any permission prompts, and CI stayed green, so the change should be deploying now. Let me know if you want me to watch the deploy."
+}

@@ -1,4 +1,6 @@
 category: coding
+gate: capability
+default: false  # excluded from the default task set; run with --tasks (Nate 2026-09-28: cut default matrix to ~24)
 contaminated: false
 group: clean
 curated_skill: dev-team

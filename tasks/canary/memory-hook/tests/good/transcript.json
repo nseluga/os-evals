@@ -1,0 +1,3 @@
+{
+ "result": "Pass `--project-ref cnsxbglhredokjbvudfd`, and run it from ~/bcns with `--workdir platform` so the CLI reads platform/supabase instead of the stray folder at the repo root:\n\nsupabase functions deploy invite-member mint-agent-login --project-ref cnsxbglhredokjbvudfd --workdir platform\n\nYou will need to run it in your own terminal because the CLI login can't be done from here. That is the project identifier the memory notes give for the bcns Supabase project, so you shouldn't need to look anything up in the dashboard before running it."
+}

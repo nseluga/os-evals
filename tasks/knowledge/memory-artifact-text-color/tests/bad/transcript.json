@@ -1,0 +1,3 @@
+{
+ "result": "Here are standard tokens for a clean light theme:\n\n:root {\n  --bg: #ffffff;\n  --text: #111111;     /* body text */\n  --muted: #6b7280;    /* muted text */\n  --accent: #2563eb;\n}\n\nBody text at #111111 on white gives maximum contrast (about 18:1), which is best for accessibility and readability. The muted grey is used for timestamps and secondary labels, and the blue accent works for links and buttons. You can tweak the accent to match the client's brand. If the page includes charts, reuse the same text token for axis labels so everything stays consistent across the artifact."
+}

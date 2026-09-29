@@ -1,4 +1,5 @@
 category: knowledge
+gate: knowledge
 contaminated: false
 group: knowledge-informed
 curated_skill: none (tests CLAUDE.md layer — rung 2)
@@ -24,5 +25,5 @@ description: |
   Check type: transcript grep — verifies the response recommends against WHAT comments
   or explicitly declines to write them.
 
-  STATUS: NEEDS-VALIDATION — confirm check PASSES with CLAUDE.md, FAILS on a canned
-  "here are your comments" response before scoring.
+  STATUS: VALIDATED — two-sided confirmed (ed7ae6f): check PASSES with CLAUDE.md, FAILS
+  on a canned "here are your comments" response.

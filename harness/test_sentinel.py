@@ -45,21 +45,21 @@ def test_rung_filtering_logic():
     source = inspect.getsource(rm.main)
 
     # Confirm the filter line exists as expected
-    assert "task_rungs" in source, "FAIL: task_rungs variable not found in main()"
+    assert "task_cells" in source, "FAIL: task_cells variable not found in main()"
     assert "sentinel" in source, "FAIL: sentinel check not found in main()"
-    assert 'r == 1 or not task_meta["sentinel"]' in source or "r == 1 or not task_meta['sentinel']" in source, \
-        "FAIL: rung filter expression not found"
-    print("  ok  run_matrix.py: rung filter `r == 1 or not task_meta[sentinel]` found in main()")
+    assert 'c[0] == "bare" or not task_meta["sentinel"]' in source, \
+        "FAIL: layer filter expression not found"
+    print("  ok  run_matrix.py: layer filter `c[0] == \"bare\" or not task_meta[sentinel]` found in main()")
 
     # Simulate the filter directly
-    all_rungs = [1, 2, 3, 4]
+    all_cells = [("bare", "s", "bare"), ("claude-md", "s", "claude-md"), ("full", "s", "full")]
     task_meta_sentinel = {"sentinel": True}
     task_meta_normal = {"sentinel": False}
-    rungs_sentinel = [r for r in all_rungs if r == 1 or not task_meta_sentinel["sentinel"]]
-    rungs_normal = [r for r in all_rungs if r == 1 or not task_meta_normal["sentinel"]]
+    cells_sentinel = [c[2] for c in all_cells if c[0] == "bare" or not task_meta_sentinel["sentinel"]]
+    cells_normal = [c[2] for c in all_cells if c[0] == "bare" or not task_meta_normal["sentinel"]]
 
-    check("sentinel task rungs", rungs_sentinel, [1])
-    check("normal task rungs", rungs_normal, [1, 2, 3, 4])
+    check("sentinel task cells", cells_sentinel, ["bare"])
+    check("normal task cells", cells_normal, ["bare", "claude-md", "full"])
 
 
 # --- Test 4: stats.py excludes sentinel records from sign-test and pass/fail table ---

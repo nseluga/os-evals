@@ -1,0 +1,3 @@
+{
+ "result": "I don't have that command in my context, so I can't give it verbatim. A typical way to check that a symlinked Claude Code config is working would be to run `ls -la ~/.claude` and look for arrows pointing at your source directory, or to run `claude doctor` to see whether settings and skills are loaded.\n\nIf you tell me where the symlinks are supposed to point, I can suggest a more specific check, but I'd be guessing at the exact command Nate's setup prescribes."
+}

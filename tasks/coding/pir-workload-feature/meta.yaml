@@ -1,8 +1,10 @@
 category: coding
+gate: capability
+default: false  # excluded from the default task set; run with --tasks
 contaminated: true
 group: knowledge-informed
 curated_skill: baseball-research
-repeat: 3
+repeat: 1  # was 3; cost control 2026-09-28 (PLAN batch 4 item 10)
 multi_turn: true
 timeout_sec: 900
 source: git-derived (PIR session history is thin — only 1 retained session). Task reconstructs

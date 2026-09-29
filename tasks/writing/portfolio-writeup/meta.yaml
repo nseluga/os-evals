@@ -1,8 +1,10 @@
 category: writing
+gate: capability
+default: false  # excluded from the default task set; run with --tasks
 contaminated: true
 group: knowledge-informed
 curated_skill: none (tests CLAUDE.md knowledge-routing + memory style preference)
-repeat: 3
+repeat: 1  # was 3; cost control 2026-09-28 (PLAN batch 4 item 10)
 source: authored fixture; the gradable axis is Nate's portfolio style (memory + library ref)
 description: |
   A rung 2/3 task on purpose: it measures whether the KNOWLEDGE and MEMORY layers earn
