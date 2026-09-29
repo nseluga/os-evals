@@ -105,6 +105,25 @@ def test_token_summary_excludes_infra():
     check("avg cost excludes infra", ts["avg_cost"], 0.5)
 
 
+def _flag(hi_wins, lo_wins):
+    """action_flag for rung 1 vs 2 with hi_wins tasks only rung 2 passes, lo_wins only rung 1 passes."""
+    rows = []
+    for i in range(hi_wins):
+        rows += [_s(f"h{i}", 1, False), _s(f"h{i}", 2, True)]
+    for i in range(lo_wins):
+        rows += [_s(f"l{i}", 1, True), _s(f"l{i}", 2, False)]
+    (pr,) = stats.compute_stats(rows)["rung_pairs"]["m"].values()
+    return pr["action_flag"]
+
+
+def test_action_flag_needs_no_majority_for_higher_rung():
+    check("3 hi wins / 0 lo -> no flag", _flag(3, 0), False)
+    check("2 hi wins / 1 lo -> no flag", _flag(2, 1), False)
+    check("1 hi win / 2 lo -> flag", _flag(1, 2), True)
+    check("0 hi / 3 lo -> flag", _flag(0, 3), True)
+    check("1 hi / 1 lo (<3 decisive) -> no flag", _flag(1, 1), False)
+
+
 if __name__ == "__main__":
     test_token_summary_excludes_infra()
     test_sign_test_excludes_x()
@@ -112,4 +131,5 @@ if __name__ == "__main__":
     test_denominators_and_infra_count()
     test_infra_warning_and_header()
     test_cross_model_excludes_infra()
+    test_action_flag_needs_no_majority_for_higher_rung()
     print("ALL PASS")

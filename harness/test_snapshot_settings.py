@@ -48,7 +48,10 @@ def test_strip():
     check("hook events", list(out["hooks"].keys()), ["UserPromptSubmit"])
     check("hook count", sum(len(g["hooks"]) for g in out["hooks"]["UserPromptSubmit"]), 1)
     cmd = out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    check("hook path rewritten", cmd, f"python3 {SNAP}/scripts/memory-relevance-hook.py")
+    check("hook path rewritten + env-wrapped", cmd,
+          "bash -c 'set -a; . \"$CLAUDE_CONFIG_DIR/rung.env\"; set +a; "
+          f"exec python3 {SNAP}/scripts/memory-relevance-hook.py'")
+    check("timeout kept", out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"], 15)
     check("memory dir rewritten", out["autoMemoryDirectory"], f"{SNAP}/knowledge/memory")
     for k in ("enabledPlugins", "extraKnownMarketplaces", "statusLine", "agentPushNotifEnabled"):
         check(f"{k} dropped", k in out, False)
@@ -65,6 +68,10 @@ def test_layers():
         out = layer_settings(layer, LIVE, SNAP)
         check(f"{layer} keys", sorted(out), ["autoMemoryDirectory", "autoMemoryEnabled", "hooks"])
         check(f"{layer} one hook event", list(out["hooks"]), ["UserPromptSubmit"])
+        cmd = out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        check(f"{layer} wrapped exactly once", cmd.count("rung.env"), 1)
+    full_cmd = layer_settings("full", LIVE, SNAP)["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    check("full wrapped exactly once", full_cmd.count("rung.env"), 1)
     check("full == strip", layer_settings("full", LIVE, SNAP), strip_settings(LIVE, SNAP))
 
 

@@ -2,7 +2,7 @@ category: coding
 contaminated: false
 group: clean
 multi_turn: true
-timeout_sec: 600
+timeout_sec: 1800
 curated_skill: dev-team
 description: |
   THROWAWAY SMOKE TEST for the multi-turn execution mode — NOT a real suite task.

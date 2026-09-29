@@ -131,8 +131,7 @@ def read_task_meta(task_dir: Path) -> dict:
     """Best-effort parse of a task's meta.yaml (no yaml dep).
 
     Fields consumed by run_matrix:
-      timeout_sec  — per-task wall-clock budget (default 300). Multi-turn skills
-                     (dev-team / dev-team-auto) set this well above 300.
+      timeout_sec  — per-task wall-clock budget (default 1800). One retry on timeout.
       multi_turn   — if true, capture the full event stream (stream-json) and give
                      the run a real git repo so orchestrator skills can branch/worktree.
       default      — false => excluded from the no-`--tasks` default set (still runs if named).
@@ -140,7 +139,7 @@ def read_task_meta(task_dir: Path) -> dict:
       curated_skill— the skill this task is meant to exercise; used to detect whether
                      that skill actually fired (routing check).
     """
-    out = {"timeout_sec": 300, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
+    out = {"timeout_sec": 1800, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
            "default": True, "tools": ""}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
@@ -339,6 +338,7 @@ def looks_like_rate_limit(stdout: str, stderr: str, transcript: dict) -> bool:
 
 
 RATE_LIMIT_MAX_RETRIES = 3
+TIMEOUT_MAX_RETRIES = 1
 
 
 def rate_limit_backoff_seconds(attempt: int) -> float:
@@ -484,14 +484,15 @@ def run_one(
     with open(prompt_file) as f:
         prompt_text = f.read()
 
-    _t0 = time.monotonic()
-    timed_out = False
     stdout = stderr = ""
     returncode = -1
     events: list[dict] = []
     transcript: dict = {}
 
-    for _attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+    _attempt = 0          # total attempts so far (drives the workspace rebuild)
+    _rl_retries = 0       # rate-limit retries used
+    timeout_retries = 0   # timeout retries used (max TIMEOUT_MAX_RETRIES)
+    while True:
         if _attempt > 0:
             # A retry must not inherit files the failed attempt wrote: rebuild ws_dir.
             import shutil
@@ -502,6 +503,10 @@ def run_one(
                 ws_dir.mkdir(parents=True, exist_ok=True)
             if multi_turn:
                 _ensure_git_repo(ws_dir)
+        _attempt += 1
+        # Timing, timeout state, stdout and events all describe the FINAL attempt only.
+        _t0 = time.monotonic()
+        timed_out = False
         try:
             result = subprocess.run(
                 cmd,
@@ -526,13 +531,19 @@ def run_one(
         # detect whether a rate-limit error occurred before deciding to retry.
         transcript, events = _parse_stream(stdout, stderr)
 
+        if timed_out and timeout_retries < TIMEOUT_MAX_RETRIES:
+            timeout_retries += 1
+            print(f"    TIMEOUT — retry {timeout_retries}/{TIMEOUT_MAX_RETRIES}", flush=True)
+            continue
+
         # If the run hit a rate limit (not an auth error), back off and retry.
         if (looks_like_rate_limit(stdout, stderr, transcript)
                 and not looks_like_auth_error(stdout, stderr, transcript)
                 and not timed_out
-                and _attempt < RATE_LIMIT_MAX_RETRIES):
-            delay = rate_limit_backoff_seconds(_attempt)
-            print(f"    rate-limit (429) detected — retry {_attempt + 1}/{RATE_LIMIT_MAX_RETRIES} "
+                and _rl_retries < RATE_LIMIT_MAX_RETRIES):
+            delay = rate_limit_backoff_seconds(_rl_retries)
+            _rl_retries += 1
+            print(f"    rate-limit (429) detected — retry {_rl_retries}/{RATE_LIMIT_MAX_RETRIES} "
                   f"in {delay:.0f}s", flush=True)
             time.sleep(delay)
             continue
@@ -566,6 +577,7 @@ def run_one(
         "multi_turn": multi_turn,
         "timeout_sec": timeout_sec,
         "timed_out": timed_out,
+        "timeout_retries": timeout_retries,
         "no_result": no_result,
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,

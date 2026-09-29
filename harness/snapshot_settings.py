@@ -30,11 +30,23 @@ def rewrite_paths(value, snap_root):
     return value
 
 
+# Claude Code strips CLAUDE_CODE_OAUTH_TOKEN from hook subprocess envs (CLAUDE_CONFIG_DIR survives),
+# so the hook's nested `claude -p` would be "Not logged in". Re-source the layer's rung.env first.
+_ENV_WRAP = 'bash -c \'set -a; . "$CLAUDE_CONFIG_DIR/rung.env"; set +a; exec '
+
+
+def _wrap_env(cmd):
+    if cmd.startswith(_ENV_WRAP) or "'" in cmd:  # already wrapped (idempotent) / unquotable
+        return cmd
+    return f"{_ENV_WRAP}{cmd}'"
+
+
 def memory_hooks_only(hooks):
-    """Keep exactly the UserPromptSubmit memory-relevance hook; drop every other hook."""
+    """Keep exactly the UserPromptSubmit memory-relevance hook (env-wrapped); drop every other hook."""
     kept = []
     for group in (hooks or {}).get("UserPromptSubmit", []):
-        cmds = [h for h in group.get("hooks", []) if MEMORY_HOOK_MARK in h.get("command", "")]
+        cmds = [{**h, "command": _wrap_env(h["command"])}
+                for h in group.get("hooks", []) if MEMORY_HOOK_MARK in h.get("command", "")]
         if cmds:
             kept.append({**{k: v for k, v in group.items() if k != "hooks"}, "hooks": cmds})
     return {"UserPromptSubmit": kept} if kept else {}

@@ -113,10 +113,57 @@ def test_retry_resets_workspace():
     check("call 2 has seed", calls[1]["seed"], True)
 
 
+def _run_with_outcomes(outcomes):
+    """run_one with subprocess.run scripted: each outcome is 'timeout' or a stdout string.
+    Returns (calls, saved transcript)."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        out = outcomes[len(calls)]
+        calls.append(kw["cwd"])
+        if out == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=b"", stderr=b"")
+        return types.SimpleNamespace(stdout=out, stderr="", returncode=0)
+
+    orig = (subprocess.run, run_matrix.time.sleep)
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        task = d / "tasks" / "t1"
+        task.mkdir(parents=True)
+        (task / "prompt.md").write_text("hi")
+        (task / "meta.yaml").write_text("timeout_sec: 60\n")
+        (d / "configs" / "1").mkdir(parents=True)
+        subprocess.run = fake_run
+        run_matrix.time.sleep = lambda s: None
+        try:
+            out = run_matrix.run_one("t1", 1, "m", d / "tasks", d / "configs", d / "runs")
+        finally:
+            subprocess.run, run_matrix.time.sleep = orig
+        return calls, json.loads(out.read_text())
+
+
+def test_timeout_retries_once():
+    calls, t = _run_with_outcomes(["timeout", json.dumps(SUCCESS)])
+    check("timeout then success: calls", len(calls), 2)
+    check("timeout then success: result", t["result"], "done")
+    check("timeout then success: timed_out", t["_meta"]["timed_out"], False)
+    check("timeout then success: timeout_retries", t["_meta"]["timeout_retries"], 1)
+
+    calls, t = _run_with_outcomes(["timeout", "timeout", json.dumps(SUCCESS)])
+    check("two timeouts: stops after 2 calls", len(calls), 2)
+    check("two timeouts: timed_out", t["_meta"]["timed_out"], True)
+    check("two timeouts: timeout_retries", t["_meta"]["timeout_retries"], 1)
+
+    calls, t = _run_with_outcomes([json.dumps(SUCCESS)])
+    check("no timeout: 1 call", len(calls), 1)
+    check("no timeout: timeout_retries", t["_meta"]["timeout_retries"], 0)
+
+
 if __name__ == "__main__":
     test_uuid_and_token_counts()
     test_real_false_positives()
     test_true_positives()
     test_answer_text_not_an_infra_error()
     test_retry_resets_workspace()
+    test_timeout_retries_once()
     print("ALL PASS")

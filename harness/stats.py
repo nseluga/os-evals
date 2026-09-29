@@ -56,9 +56,6 @@ def select_pairs(rungs, order=None) -> list[tuple]:
     return list(zip(ordered, ordered[1:]))
 
 
-ACTION_THRESHOLD = 7  # wins <= this two runs in a row -> prune candidate
-
-
 def sign_test(a_wins: int, b_wins: int, ties: int) -> str:
     n = a_wins + b_wins
     if n == 0:
@@ -144,7 +141,7 @@ def compute_stats(scores: list[dict], order=None) -> dict:
                 "lower_wins": wins_lo,
                 "ties": ties,
                 "sign_test": sign_test(wins_lo, wins_hi, ties),
-                "action_flag": wins_hi <= ACTION_THRESHOLD if (wins_hi + wins_lo) >= 3 else False,
+                "action_flag": (wins_hi + wins_lo) >= 3 and wins_hi <= wins_lo,
                 "task_verdicts": task_verdicts,
             }
         results[model] = pair_results
@@ -562,7 +559,7 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
 
     lines += ["## Paired Sign-Test", ""]
     lines += [
-        f"Action threshold: ≤{ACTION_THRESHOLD} wins on ≥3 tasks = prune candidate", ""
+        "Action rule: ≥3 decisive tasks and the higher rung does not win a majority (higher wins ≤ lower wins) = prune candidate", ""
     ]
     if not any(stats["rung_pairs"].values()):
         lines += ["No rung pairs to compare: fewer than two layers with results.", ""]

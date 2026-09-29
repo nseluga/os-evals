@@ -5,7 +5,7 @@ contaminated: false
 group: clean
 curated_skill: dev-team
 multi_turn: true
-timeout_sec: 1200
+timeout_sec: 1800
 source: authored for the hard-task batch (iteration 2). Not from Nate's real repos —
   path-traversal defense is general CS, not recorded in ~/os project READMEs/library notes.
 description: |

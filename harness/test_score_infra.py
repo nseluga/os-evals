@@ -100,10 +100,23 @@ def test_workspace_present_runs_check():
         check("check.sh executed", marker.exists(), True)
 
 
+def test_timeout_is_infra():
+    stub = {"type": "result", "is_error": True, "result": "no terminal result event (run truncated)",
+            "usage": {"output_tokens": 3}}
+    check("timed_out + stub result -> timeout",
+          score.classify_infra({**stub, "_meta": {"timed_out": True, "no_result": False}}), "timeout")
+    real = {"type": "result", "subtype": "success", "is_error": False, "result": "done"}
+    check("timed_out + real result -> not timeout",
+          score.classify_infra({**real, "_meta": {"timed_out": True}}), None)
+    check("not timed_out + stub -> not timeout",
+          score.classify_infra({**stub, "_meta": {"timed_out": False, "no_result": False}}), None)
+
+
 if __name__ == "__main__":
     test_majority_ignores_infra()
     test_all_infra_group_is_infra()
     test_no_infra_plain_majority()
     test_workspace_missing_skips_check()
     test_workspace_present_runs_check()
+    test_timeout_is_infra()
     print("ALL PASS")

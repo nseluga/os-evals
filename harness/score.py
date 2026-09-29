@@ -103,12 +103,17 @@ def is_budget_stop(transcript: dict) -> bool:
 def classify_infra(transcript: dict) -> str | None:
     """Infra reason for failures that say nothing about the task, else None.
 
+    timeout: _meta.timed_out and no genuine terminal result (a real CLI result event carries
+    a subtype; the synthesized stand-in does not). Timeouts were already retried once.
     no_result: stream ended with no final result event and no timeout.
     api_error: is_error AND the error text shows an API/transport failure. A model answer
     that merely mentions 503 with is_error false is NOT infra; a budget stop is not infra.
     (rate_limited / auth_error / contaminated are handled separately in score_run.)"""
     t = _dict(transcript)
-    if _dict(t.get("_meta")).get("no_result"):
+    meta = _dict(t.get("_meta"))
+    if meta.get("timed_out") and not t.get("subtype"):
+        return "timeout"
+    if meta.get("no_result"):
         return "no_result"
     if not t.get("is_error") or is_budget_stop(t):
         return None
