@@ -24,7 +24,7 @@ NEG = re.compile(r"(\bnot\b|\bnever\b|\bno\b|n't\b|\bwithout\b|\bexcept\b|\binst
 NEG_AFTER = re.compile(r"^\W*(?:does not|doesn't|is not|isn't|never|won't|will not|stays out|need not|needn't|shouldn't|should not|is left out|is not emailed|doesn't get)")
 
 # split into clauses: sentences, lines, table rows, semicolons, contrast conjunctions
-clauses = [c.strip() for c in re.split(r"[.!?\n;]+|,\s*(?:and|but|while)\b|\bwhile\b|\bwhereas\b|\bbut\b", rl.replace("|", " ")) if c.strip()]
+clauses = [c.strip() for c in re.split(r"[.!?\n;]+|,\s*(?:and|but|while)\b|\bwhile\b|\bwhereas\b|\bbut\b", rl.replace("|", " | ")) if c.strip()]
 
 REPLY = re.compile(r"\brepl(?:y|ies|ied|ying)\b|\bresponds?\b|\bresponded\b|\bwants? a call\b|\bneeds? a call\b|\bstopped replying\b")
 SIGN = re.compile(r"\bsign(?:s|ed|ing)?\b|\bonboard(?:ing)?\b|\bcloses?\b|\bclosed\b|\bconvert(?:s|ed)?\b")
@@ -41,7 +41,8 @@ def mentions_positive(clause, who):
 
 # Nate may be addressed as "you" (the prompt says "me (Nate)"): count "you" only in recipient-like positions.
 NATE = (r"\bnate\b|\bme\b|\bto you\b|\b(?:email|notify|cc|copy|tell|ping) you\b"
-        r"|\byou(?= (?:and|&|both|should|would|will|also|get|receive|are|be)\b)")
+        r"|\byou(?= (?:and|&|both|should|would|will|also|get|receive|are|be)\b)"
+        r"|(?<=→ )you\b|(?<=-> )you\b|(?<=: )you\b|(?<=\| )you\b|(?<=\*\*)you\b")
 
 reply_brandon = reply_nate = sign_nate = sign_brandon = False
 for c in clauses:

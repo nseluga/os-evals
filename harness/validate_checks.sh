@@ -90,6 +90,14 @@ for t in "${tasks[@]}"; do
   [ "$rb" != 1 ] && { v=MISMATCH; why+=" bad rc=$rb: $ob;"; }
   [ "$textonly" = 0 ] && [ "$ru" != 2 ] && { v=MISMATCH; why+=" unset rc=$ru: ${ou:-};"; }
   [ "$textonly" = 0 ] && [ "$rm_" != 2 ] && { v=MISMATCH; why+=" missing rc=$rm_: ${om:-};"; }
+  # extra text-only fixtures (good2.., bad2..: usually real stored answers) must agree too
+  if [ "$textonly" = 1 ]; then
+    for f in "$td"/tests/good?*/transcript.json "$td"/tests/bad?*/transcript.json; do
+      [ -f "$f" ] || continue
+      fx="$(basename "$(dirname "$f")")"; want=0; case "$fx" in bad*) want=1;; esac
+      run_check "$chk" "$f" "-"; [ "$RC" != "$want" ] && { v=MISMATCH; why+=" $fx rc=$RC: $OUT;"; }
+    done
+  fi
   printf '%-42s %-5s %-5s %-6s %-8s %s\n' "$t" "$rg" "$rb" "$ru" "$rm_" "$v"
   [ "$v" = MISMATCH ] && { mism=1; mismsg+="MISMATCH $t:$why"$'\n'; }
   [ "$KEEP" = 0 ] && rm -rf "$w"

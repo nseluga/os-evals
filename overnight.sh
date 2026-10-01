@@ -3,8 +3,8 @@ set -uo pipefail
 
 # overnight.sh: three eval stages back to back, unattended.
 #   1. canaries   bare vs full, opus + sonnet   (does each layer load at all?)
-#   2. general    bare vs full, opus            (default task set, canaries excluded)
-#   3. general    bare vs full, sonnet
+#   2. verdict    all 5 layers, repeat 3, opus   (default task set, canaries excluded)
+#   3. verdict    all 5 layers, repeat 3, sonnet
 # Stage 1 must finish cleanly (auth and harness ok) or the script stops; a canary that
 # FAILS is a result, not a stop. Scorecards land in scorecards/. Logs in overnight-logs/.
 #
@@ -74,10 +74,10 @@ print(f"canary transcripts={n} infra-flagged={bad}")
 sys.exit(1 if n == 0 or bad == n else 0)
 PY
 fi
-stage general-opus   --no-build --tasks "$GENERAL" --layers bare,full --models opus   --max-budget-usd 1.50; R2=$?
-stage general-sonnet --no-build --tasks "$GENERAL" --layers bare,full --models sonnet --max-budget-usd 1.50; R3=$?
+stage verdict-opus   --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models opus   --max-budget-usd 1.50; R2=$?
+stage verdict-sonnet --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models sonnet --max-budget-usd 1.50; R3=$?
 
 [ -z "$DRY" ] && touch "$DONE"
-echo "overnight.sh: finished $(date) general-opus rc=$R2 general-sonnet rc=$R3" | tee -a "$LOG"
+echo "overnight.sh: finished $(date) verdict-opus rc=$R2 verdict-sonnet rc=$R3" | tee -a "$LOG"
 echo "scorecards:"; ls -t scorecards/*.md | head -3 | tee -a "$LOG"
 exit $(( R2 || R3 ))

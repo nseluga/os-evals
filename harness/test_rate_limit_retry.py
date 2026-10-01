@@ -1,8 +1,9 @@
-"""Tests: looks_like_rate_limit false positives, and retry workspace reset.
+"""Tests: looks_like_rate_limit false positives, retry workspace reset, per-run config dir.
 
 Run: python3 harness/test_rate_limit_retry.py
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,68 @@ def test_retry_resets_workspace():
     check("call 2 has seed", calls[1]["seed"], True)
 
 
+def test_per_run_config_dir():
+    """cfg/ is an allowlist copy of the layer template, is CLAUDE_CONFIG_DIR, and is rebuilt
+    on retry; w/ is the cwd and the recorded workspace_dir."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        cfg = Path(kw["env"]["CLAUDE_CONFIG_DIR"])
+        calls.append({"cwd": kw["cwd"], "cfg": str(cfg), "stale": (cfg / "projects").exists(),
+                      "files": sorted(p.name for p in cfg.iterdir())})
+        if len(calls) == 1:  # what Claude Code writes into its config dir mid-run
+            (cfg / "projects").mkdir()
+            (cfg / "projects" / "s.jsonl").write_text("answer")
+            out, rc = json.dumps(ERR_429), 1
+        else:
+            out, rc = json.dumps(SUCCESS), 0
+        return types.SimpleNamespace(stdout=out, stderr="", returncode=rc)
+
+    orig = (subprocess.run, run_matrix.time.sleep, run_matrix.rate_limit_backoff_seconds)
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        task = d / "tasks" / "t1"
+        task.mkdir(parents=True)
+        (task / "prompt.md").write_text("hi")
+        tpl = d / "configs" / "sha1" / "full"
+        (tpl / "projects").mkdir(parents=True)
+        (tpl / "projects" / "old-run.jsonl").write_text("another run's answer")
+        (tpl / "CLAUDE.md").write_text("ctx")
+        (tpl / "settings.json").write_text("{}")
+        (tpl / "rung.env").write_text(f"CLAUDE_CONFIG_DIR={tpl}\nHOME={d}/configs/sha1/home\n")
+        (tpl / ".claude.json").write_text("{}")
+        (d / "src-skills").mkdir()
+        (tpl / "skills").symlink_to(d / "src-skills")
+        subprocess.run = fake_run
+        run_matrix.time.sleep = lambda s: None
+        run_matrix.rate_limit_backoff_seconds = lambda a: 0
+        try:
+            out = run_matrix.run_one("t1", "full", "m", d / "tasks", d / "configs", d / "runs",
+                                     os_sha="sha1", ws_root=d / "ws")
+        finally:
+            subprocess.run, run_matrix.time.sleep, run_matrix.rate_limit_backoff_seconds = orig
+        meta = json.loads(out.read_text())["_meta"]
+        run_dir = Path(meta["workspace_dir"]).parent
+        cfg = run_dir / "cfg"
+        check("run dir under ws_root", run_dir.parent, Path(os.path.abspath(d / "ws")))
+        check("cwd is w/", calls[0]["cwd"], str(run_dir / "w"))
+        check("workspace_dir is w/", meta["workspace_dir"], str(run_dir / "w"))
+        check("CLAUDE_CONFIG_DIR is cfg/", calls[0]["cfg"], str(cfg))
+        check("cfg/ allowlist only", calls[0]["files"], ["CLAUDE.md", "rung.env", "settings.json", "skills"])
+        env_lines = (cfg / "rung.env").read_text().splitlines()
+        check("cfg/rung.env points the hook at cfg/", env_lines[0], f"CLAUDE_CONFIG_DIR={cfg}")
+        check("cfg/rung.env keeps the rest, drops the template dir",
+              env_lines[1:], [f"HOME={d}/configs/sha1/home"])
+        check("cfg/rung.env private", oct((cfg / "rung.env").stat().st_mode & 0o777), "0o600")
+        check("CLAUDE.md copied", (cfg / "CLAUDE.md").read_text(), "ctx")
+        check("skills symlink same target", os.readlink(cfg / "skills"), str(d / "src-skills"))
+        check("template projects/ left behind", (cfg / "projects" / "old-run.jsonl").exists(), False)
+        check("retried", len(calls), 2)
+        check("retry: cfg/ rebuilt (attempt 1's projects/ gone)", calls[1]["stale"], False)
+        check("retry: same cfg/", calls[1]["cfg"], str(cfg))
+        check("template untouched", (tpl / "projects" / "old-run.jsonl").exists(), True)
+
+
 def _run_with_outcomes(outcomes):
     """run_one with subprocess.run scripted: each outcome is 'timeout' or a stdout string.
     Returns (calls, saved transcript)."""
@@ -165,5 +228,6 @@ if __name__ == "__main__":
     test_true_positives()
     test_answer_text_not_an_infra_error()
     test_retry_resets_workspace()
+    test_per_run_config_dir()
     test_timeout_retries_once()
     print("ALL PASS")

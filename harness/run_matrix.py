@@ -23,10 +23,14 @@ Inputs:
   --runs-dir   path to runs/ (default: <repo>/runs)
   --jobs N     run one-shot tasks in a pool of N threads (default 1); multi-turn tasks
                always run serially after the pool. N=1 keeps the plain serial order.
-  --ws-root    dir that holds the per-run workspaces (default: env EVAL_WS_ROOT, else
+  --ws-root    dir that holds the per-run dirs (default: env EVAL_WS_ROOT, else
                /Users/Shared/evalws: outside the repo and $HOME, so the model cannot walk up
-               to tasks/ or an ancestor .claude/). Dirs are opaque: w-<10 hex of sha1(run id)>.
-               Transcripts stay in --runs-dir.
+               to tasks/ or an ancestor .claude/). Each run gets an opaque
+               w-<10 hex of sha1(run id)>/ holding w/ (the cwd, = WORKSPACE_DIR) and cfg/ (its
+               own CLAUDE_CONFIG_DIR, a clean copy of the layer template: no other run's
+               transcripts or state). Transcripts stay in --runs-dir.
+  --repeat N   run every task N times, overriding each task's meta.yaml `repeat`
+               (default: unset, use meta).
 
 meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
 default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
@@ -373,13 +377,49 @@ def _ensure_git_repo(ws_dir: Path) -> None:
     )
 
 
+def rung_dir(configs_dir: Path, layer, os_sha: str = "") -> Path:
+    """configs/<sha>/<layer>/ (configs/<layer>/ if no sha): the layer's template config dir."""
+    return configs_dir / os_sha / str(layer) if os_sha else configs_dir / str(layer)
+
+
+RUN_CONFIG_FILES = ("CLAUDE.md", "settings.json")
+RUN_CONFIG_LINKS = ("skills", "agents", "output-styles")
+
+
+def build_run_config(template: Path, cfg: Path) -> None:
+    """(Re)create cfg as a fresh per-run CLAUDE_CONFIG_DIR from the layer template.
+
+    Allowlist only: the static config files are copied and the skills/agents/output-styles
+    symlinks recreated with the same targets. Everything else Claude Code writes into a
+    config dir (projects/*.jsonl transcripts, sessions/, backups/, .claude.json, ...) and
+    rung.flags stay behind, so no run sees another run's answers. rung.env is rewritten with
+    CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for the auth
+    token (Claude Code doesn't pass it to hooks), and its nested session must stay per-run."""
+    import shutil
+    shutil.rmtree(cfg, ignore_errors=True)
+    cfg.mkdir(parents=True)
+    for name in RUN_CONFIG_FILES:
+        if (template / name).is_file():
+            shutil.copy2(template / name, cfg / name)
+    for name in RUN_CONFIG_LINKS:
+        if (template / name).is_symlink():
+            target = os.readlink(template / name)
+            os.symlink(os.path.join(template, target), cfg / name)  # join is a no-op for an absolute target
+    env_file = template / "rung.env"
+    if env_file.is_file():
+        lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith("CLAUDE_CONFIG_DIR=")]
+        fd = os.open(cfg / "rung.env", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join([f"CLAUDE_CONFIG_DIR={cfg}", *lines]) + "\n")
+
+
 def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str], list[str]]:
     """Returns (env_vars, extra_flags) for configs/<sha>/<layer>/ (configs/<layer>/ if no sha)."""
-    rung_dir = configs_dir / os_sha / str(layer) if os_sha else configs_dir / str(layer)
-    if not rung_dir.is_dir():
-        raise FileNotFoundError(f"layer config dir missing (unknown or unbuilt layer?): {rung_dir}")
-    env_file = rung_dir / "rung.env"
-    flags_file = rung_dir / "rung.flags"
+    rdir = rung_dir(configs_dir, layer, os_sha)
+    if not rdir.is_dir():
+        raise FileNotFoundError(f"layer config dir missing (unknown or unbuilt layer?): {rdir}")
+    env_file = rdir / "rung.env"
+    flags_file = rdir / "rung.flags"
 
     env_vars: dict[str, str] = {}
     if env_file.exists():
@@ -453,14 +493,21 @@ def run_one(
     base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}"
     run_id = f"{base_run_id}_r{repeat_index}" if repeat_total > 1 else base_run_id
 
-    # Every run gets its OWN isolated per-run dir as cwd. If the task ships a frozen
-    # workspace (workspace.ref and/or seed/), it's restored there so files the model
-    # writes are inspectable by check.sh (via WORKSPACE_DIR). If the task has NEITHER,
-    # the dir is left empty — a leak guard so text-only analysis/writing tasks never
-    # run in (and read from) the eval repo itself.
+    # Every run gets its OWN per-run dir <ws_root>/w-<hex>/ holding w/ (the cwd) and cfg/
+    # (its CLAUDE_CONFIG_DIR). If the task ships a frozen workspace (workspace.ref and/or
+    # seed/), it's restored into w/ so files the model writes are inspectable by check.sh
+    # (via WORKSPACE_DIR). If the task has NEITHER, w/ is left empty — a leak guard so
+    # text-only analysis/writing tasks never run in (and read from) the eval repo itself.
+    # cfg/ is a clean copy of the shared layer template: Claude Code writes session
+    # transcripts and state into its config dir, which must never be shared between runs.
     runs_dir.mkdir(parents=True, exist_ok=True)
-    ws_dir = Path(os.path.abspath((ws_root or runs_dir) / workspace_name(run_id)))
-    ws_dir.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(os.path.abspath((ws_root or runs_dir) / workspace_name(run_id)))
+    ws_dir = run_dir / "w"
+    cfg_dir = run_dir / "cfg"
+    template_dir = rung_dir(configs_dir, layer, os_sha)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    build_run_config(template_dir, cfg_dir)
+    env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
     has_ref = (task_dir / "workspace.ref").exists()
     has_seed = (task_dir / "seed").is_dir()
     if has_ref or has_seed:
@@ -494,9 +541,10 @@ def run_one(
     timeout_retries = 0   # timeout retries used (max TIMEOUT_MAX_RETRIES)
     while True:
         if _attempt > 0:
-            # A retry must not inherit files the failed attempt wrote: rebuild ws_dir.
+            # A retry must not inherit files the failed attempt wrote: rebuild w/ and cfg/.
             import shutil
             shutil.rmtree(ws_dir, ignore_errors=True)
+            build_run_config(template_dir, cfg_dir)
             if has_ref or has_seed:
                 restore_workspace(task_dir, ws_dir)
             else:
@@ -554,8 +602,8 @@ def run_one(
     skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
     isolated = "HOME" in env_vars
     forbidden, allowed, tilde_root = contamination_rules(
-        REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(ws_dir), isolated,
-        ws_root=str(ws_dir.parent))
+        REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(run_dir), isolated,
+        ws_root=str(run_dir.parent), run_home=env_vars.get("HOME"))
     hits = find_contamination(events, forbidden, allowed, tilde_root)
     auth_error = looks_like_auth_error(stdout, stderr, transcript)
     rate_limited = looks_like_rate_limit(stdout, stderr, transcript)
@@ -703,7 +751,11 @@ def main() -> int:
     parser.add_argument("--runs-dir", default=str(REPO_ROOT / "runs"))
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--ws-root", default=os.environ.get("EVAL_WS_ROOT", "") or DEFAULT_WS_ROOT)
+    parser.add_argument("--repeat", type=int, default=None)
     args = parser.parse_args()
+    if args.repeat is not None and args.repeat < 1:
+        print(f"run_matrix: ERROR --repeat must be >= 1 (got {args.repeat})", file=sys.stderr)
+        return 2
 
     tasks_dir = Path(args.tasks_dir)
     configs_dir = Path(args.config_dir)
@@ -744,7 +796,7 @@ def main() -> int:
         task_cells = [c for c in cells if c[0] == "bare" or not task_meta["sentinel"]]
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
-        plan.append((task, task_cells, task_meta.get("repeat", 1)))
+        plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
 
     if args.dry_run:
         total = sum(len(tc) * len(models) * rep for _, tc, rep in plan)

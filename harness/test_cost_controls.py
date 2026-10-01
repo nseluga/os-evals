@@ -1,4 +1,4 @@
-"""Tests: default:false, tools:none, --jobs pool, --ws-root, dry-run cost estimate.
+"""Tests: default:false, tools:none, --jobs pool, --ws-root, dry-run cost estimate, --repeat.
 
 Run: python3 harness/test_cost_controls.py
 """
@@ -111,7 +111,7 @@ def test_ws_root():
         import json
         wd = json.loads(out.read_text())["_meta"]["workspace_dir"]
         check("transcript stays in runs", out.parent, runs)
-        check("workspace under ws-root", Path(wd).parent, ws)
+        check("workspace is <ws-root>/w-<hex>/w", (Path(wd).parent.parent, Path(wd).name), (ws, "w"))
         check("workspace_dir absolute", Path(wd).is_absolute(), True)
         check("cwd is the workspace", seen["cwd"], wd)
 
@@ -134,10 +134,55 @@ def test_estimate():
     check("empty history", estimate_cost([], {"a": 1}, set())["no_history"], ["a"])
 
 
+def _dry_run(argv, tmp: Path):
+    """main(--dry-run) on a scratch tasks/configs tree; returns (stdout, counts given to estimate)."""
+    import contextlib
+    import io
+    tasks, cfg = tmp / "tasks", tmp / "configs"
+    if not tasks.exists():
+        mk_task(tasks, "once", "timeout_sec: 5\n")
+        mk_task(tasks, "thrice", "repeat: 3\n")
+        (cfg / "bare").mkdir(parents=True)
+    seen = {}
+    orig_argv, orig_est = sys.argv, run_matrix.estimate_cost
+
+    def fake_est(history, counts, multi):
+        seen.update(counts)
+        return orig_est([], counts, multi)
+
+    sys.argv = ["run_matrix.py", "--tasks", "once,thrice", "--layers", "bare", "--models", "m1,m2",
+                "--config-dir", str(cfg), "--tasks-dir", str(tasks), "--runs-dir", str(tmp / "runs"),
+                "--dry-run", *argv]
+    run_matrix.estimate_cost = fake_est
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = run_matrix.main()
+    finally:
+        sys.argv, run_matrix.estimate_cost = orig_argv, orig_est
+    return rc, buf.getvalue(), seen
+
+
+def test_repeat_flag():
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        rc, out, counts = _dry_run([], tmp)
+        check("no --repeat: meta repeat used", counts, {"once": 2, "thrice": 6})
+        check("no --repeat: total", "total runs: 8" in out, True)
+        rc, out, counts = _dry_run(["--repeat", "4"], tmp)
+        check("--repeat 4 overrides meta (estimate counts)", counts, {"once": 8, "thrice": 8})
+        check("--repeat 4: total", "total runs: 16" in out, True)
+        check("--repeat 4: per-task line", "thrice: 1 cells x 2 models x 4 repeat = 8" in out, True)
+        check("no runs/ written", (tmp / "runs").exists(), False)
+        rc, out, _ = _dry_run(["--repeat", "0"], tmp)
+        check("--repeat 0 refused", (rc, "must be >= 1" in out), (2, True))
+
+
 if __name__ == "__main__":
     test_default_false()
     test_tools_none()
     test_jobs_pool()
     test_ws_root()
     test_estimate()
+    test_repeat_flag()
     print("ALL PASS")

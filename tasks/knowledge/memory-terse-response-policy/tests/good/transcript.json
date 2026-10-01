@@ -1,0 +1,3 @@
+{
+ "result": "Don't add the summary. The user can already see the diffs and tool output, so \"I've completed the implementation. Here's what changed...\" just repeats what is on screen and is padding.\n\nEnd with the result instead: say whether it works, flag anything that needs their attention (a skipped test, a decision you made for them), and stop. No step-by-step narration of what you did, and no sign-off.\n\nIf something is not visible in the diff, such as a tradeoff or a caveat, mention that one thing. Otherwise keep it short and skip the recap."
+}

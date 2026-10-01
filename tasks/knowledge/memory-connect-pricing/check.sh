@@ -45,8 +45,8 @@ def live(pattern, must_near=None):
     return False
 
 connect_200 = live(r"\$\s?200\b", r"month|/mo|\bmo\b|connect|monthly")
-deluxe_5000 = live(r"\$\s?5,?000\b|\$\s?5k\b", r"from|starting|starts|at least|and up|deluxe|custom|setup|set-up|build")
-deluxe_from = live(r"\$\s?5,?000\b|\$\s?5k\b", r"from|starting|starts|at least|and up|\+")
+deluxe_5000 = live(r"\$\s?5,?000\b|\$\s?5k\b", r"from|starting|starts?\b|at least|and up|deluxe|custom|setup|set-up|build")
+deluxe_from = live(r"\$\s?5,?000\b|\$\s?5k\b", r"from|starting|starts?\b|at least|and up|\+")
 deluxe_300 = live(r"\$\s?300\b", r"month|/mo|\bmo\b|monthly|deluxe|on top")
 
 # Stale Standard/Advanced pricing quoted as current

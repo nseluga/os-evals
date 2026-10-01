@@ -5,6 +5,8 @@ group: knowledge-informed
 curated_skill: none (tests CLAUDE.md layer — rung 2)
 source: authored to target CLAUDE.md comment policy
 description: |
+  RETIRED 2026-09-30: ~/os CLAUDE.md no longer has a WHY-only comment rule (checked at 6e5c29e); Claude Code's default prompt already discourages WHAT comments, so it can't isolate ~/os.
+
   A rung-2 task by design: tests whether CLAUDE.md's "no WHAT comments" instruction
   overrides the default coding-community advice to document code with inline comments.
 

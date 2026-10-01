@@ -17,7 +17,7 @@ from pathlib import Path
 HIT_MAX = 160
 _PATH_CHAR = r"[\w.\-]"
 _TOKEN_END = " \t\n'\"`;|&<>()"
-# ~/x, $HOME/x, ${HOME}/x -> the real home (only when tilde resolves to the real HOME)
+# ~/x, $HOME/x, ${HOME}/x -> the HOME the run actually had (tilde_root)
 _TILDE_RE = re.compile(r"(?<![\w.~$])(?:~|\$HOME|\$\{HOME\})(?=/)")
 
 
@@ -71,9 +71,8 @@ def _hits_in(s: str, forbidden: list[str], allowed: list[str]) -> bool:
 def find_contamination(events, forbidden, allowed, tilde_root: str | None = None) -> list[str]:
     """Distinct tool-input strings (cut to 160 chars) that touch a forbidden root outside
     every allowed root. Roots match on path boundaries (`/h/os` never matches `/h/os-evals`).
-    `tilde_root`: when set, `~/`, `$HOME/` and `${HOME}/` in an input are read as that real
-    home dir (HOME isolation off, or a bare layer); when None they resolve to a snapshot
-    and are ignored."""
+    `tilde_root`: when set, `~/`, `$HOME/` and `${HOME}/` in an input are read as that dir
+    (the HOME the run actually had); when None they are left as written."""
     hits: list[str] = []
     for inp in _tool_inputs(events):
         for s in _strings(inp):
@@ -97,12 +96,24 @@ def read_origin(task_dir: Path) -> str:
 
 
 def contamination_rules(repo: Path, home: Path, configs_dir: Path, task_dir: Path, layer: str,
-                        os_sha: str, ws_dir: str, isolated: bool, ws_root: str | None = None):
+                        os_sha: str, ws_dir: str, isolated: bool, ws_root: str | None = None,
+                        run_home: str | None = None, shared_cfg: bool = False):
     """(forbidden, allowed, tilde_root) for one run; feed them to find_contamination.
 
-    `ws_root` (the dir holding every run's workspace) is forbidden with this run's own
-    ws_dir as the allowed exception, so reading a sibling run's workspace is a hit. When
-    omitted it is the parent of ws_dir."""
+    `ws_dir` is this run's own dir: the per-run parent holding w/ (cwd) and cfg/ (its
+    CLAUDE_CONFIG_DIR), or the flat workspace of a run made before that layout. It is the
+    allowed exception under `ws_root` (the dir holding every run's dir, forbidden), so
+    reading a sibling run's dir is a hit. `ws_root` defaults to the parent of ws_dir.
+
+    Non-bare layers with an os_sha may also read all of configs/<sha> (the os snapshot
+    src/, home/, the clean layer templates); bare may read only configs/<sha>/home-bare
+    (its HOME), never src/ or another layer. `run_home` is the HOME the run was given:
+    with isolation on, `~` resolves there; with it off (or run_home unknown) `~` is the
+    real home, so `~/os` / `~/.claude` reads are hits.
+
+    `shared_cfg`: the run used the shared template configs/<sha>/<layer>/ as its config
+    dir (runs made before per-run cfg/): every layer dir then held other runs'
+    transcripts, so non-bare may read only its own layer dir, src/ and home/."""
     repo, home = Path(repo), Path(home)
     forbidden = [str(repo / d) for d in ("tasks", "harness", "scorecards", "runs", "configs")]
     forbidden += [str(home / d) for d in ("os", "personal-os", ".claude")]
@@ -113,13 +124,15 @@ def contamination_rules(repo: Path, home: Path, configs_dir: Path, task_dir: Pat
     if root and Path(root).is_absolute() and root.rstrip("/"):
         forbidden.append(root)
     allowed = [str(ws_dir)]
-    bare = str(layer) == "bare"
-    if not bare:
-        cfg = Path(configs_dir)
-        allowed.append(str(cfg / os_sha / str(layer) if os_sha else cfg / str(layer)))
+    cfg = Path(configs_dir)
+    if str(layer) == "bare":
         if os_sha:
-            allowed += [str(cfg / os_sha / "src"), str(cfg / os_sha / "home")]
-    tilde_root = str(home) if (bare or not isolated) else None
+            allowed.append(str(cfg / os_sha / "home-bare"))
+    elif os_sha and shared_cfg:
+        allowed += [str(cfg / os_sha / d) for d in (str(layer), "src", "home")]
+    else:
+        allowed.append(str(cfg / os_sha if os_sha else cfg / str(layer)))
+    tilde_root = str(run_home) if (isolated and run_home) else str(home)
     return forbidden, allowed, tilde_root
 
 

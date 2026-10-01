@@ -9,12 +9,12 @@
     <string>/Users/nateseluga/os-evals/overnight.sh</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/nateseluga/os-evals</string>
-  <!-- Month+Day pinned: fires once (2026-09-29 01:00), not every night. If the Mac is asleep, launchd runs it on wake. -->
+  <!-- Month+Day pinned: fires once (2026-10-01 03:00), not every night. If the Mac is asleep, launchd runs it on wake. -->
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Month</key><integer>9</integer>
-    <key>Day</key><integer>30</integer>
-    <key>Hour</key><integer>1</integer>
+    <key>Month</key><integer>10</integer>
+    <key>Day</key><integer>1</integer>
+    <key>Hour</key><integer>3</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
   <key>EnvironmentVariables</key>

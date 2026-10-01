@@ -17,6 +17,10 @@ set -euo pipefail
 #   ./run.sh --jobs 4                     # one-shot tasks 4 at a time; multi-turn stay serial
 #   ./run.sh --ws-root /some/dir          # workspace root (default $EVAL_WS_ROOT or /Users/Shared/evalws)
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
+#   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
+#
+# Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
+# a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
 #
 # Prior runs/ transcripts (and any workspaces physically inside runs/) are moved to
 # runs/archive/<utc-ts>/ (never deleted); workspaces in an external ws-root stay put.
@@ -39,6 +43,7 @@ DRY_RUN=0
 CLEAN_WS=0
 JOBS=1
 WS_ROOT=""
+REPEAT=""
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -55,6 +60,7 @@ while [ $# -gt 0 ]; do
         --jobs) JOBS="$2"; shift 2;;
         --ws-root) WS_ROOT="$2"; shift 2;;
         --clean-ws) CLEAN_WS=1; shift;;
+        --repeat) REPEAT="$2"; shift 2;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
@@ -97,7 +103,7 @@ while [ -e "$SCORECARDS_DIR/${STAMP}.md" ] || [ -e "$SCORECARDS_DIR/${STAMP}.sco
     TS="$(date -u +%Y%m%dT%H%M%SZ)"
     STAMP="${TS}-${OS_SHA}"
 done
-echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  max-budget-usd=$MAX_BUDGET  stamp=$STAMP"
+echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
 
 # --- Auto-discover tasks if none given (exclude the print-date smoke test) ---
 if [ -z "$TASKS" ]; then
@@ -140,6 +146,7 @@ MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget
     --jobs "$JOBS"
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
+[ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
 
 if [ "$DRY_RUN" -eq 1 ]; then
     python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run
@@ -224,8 +231,11 @@ for f in Path(sys.argv[1]).glob("*.json"):
         ws = json.loads(f.read_text()).get("_meta", {}).get("workspace_dir", "")
     except ValueError:
         continue
-    if ws and re.fullmatch(r"w-[0-9a-f]{10}|.*\.ws", Path(ws).name):
-        shutil.rmtree(ws, ignore_errors=True)
+    p = Path(ws) if ws else None
+    if p and p.name == "w" and re.fullmatch(r"w-[0-9a-f]{10}", p.parent.name):
+        shutil.rmtree(p.parent, ignore_errors=True)   # per-run dir: w/ + cfg/
+    elif p and re.fullmatch(r"w-[0-9a-f]{10}|.*\.ws", p.name):
+        shutil.rmtree(p, ignore_errors=True)          # older flat workspace
 PY
 fi
 
