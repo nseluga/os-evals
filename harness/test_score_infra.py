@@ -112,6 +112,18 @@ def test_timeout_is_infra():
           score.classify_infra({**stub, "_meta": {"timed_out": False, "no_result": False}}), None)
 
 
+def test_runaway_output_is_infra():
+    # Real shape from 2026-10-01 Opus: --tools "" run wrote fake tool calls to the 128k cap.
+    runaway = {"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "result": None,
+               "stop_reason": "max_tokens", "errors": ["Reached maximum budget ($1.5)"], "_meta": {}}
+    check("max_tokens + no result -> runaway_output", score.classify_infra(runaway), "runaway_output")
+    spent = {**runaway, "stop_reason": "end_turn"}
+    check("budget stop without max_tokens -> real fail", score.classify_infra(spent), None)
+    answered = {"type": "result", "subtype": "success", "is_error": False, "result": "done",
+                "stop_reason": "max_tokens", "_meta": {}}
+    check("max_tokens but answered -> not infra", score.classify_infra(answered), None)
+
+
 if __name__ == "__main__":
     test_majority_ignores_infra()
     test_all_infra_group_is_infra()
@@ -119,4 +131,5 @@ if __name__ == "__main__":
     test_workspace_missing_skips_check()
     test_workspace_present_runs_check()
     test_timeout_is_infra()
+    test_runaway_output_is_infra()
     print("ALL PASS")

@@ -91,8 +91,8 @@ def _error_text(transcript: dict) -> str:
 
 
 def is_budget_stop(transcript: dict) -> bool:
-    """CLI stopped on --max-budget-usd. Shape is a GUESS (no stored example in runs/):
-    is_error plus subtype or result text containing 'budget'."""
+    """CLI stopped on --max-budget-usd. Real shape (2026-10-01): is_error, subtype
+    error_max_budget_usd, errors ["Reached maximum budget ($1.5)"], terminal_reason budget_exhausted."""
     if not transcript.get("is_error"):
         return False
     sub = transcript.get("subtype")
@@ -108,6 +108,7 @@ def classify_infra(transcript: dict) -> str | None:
     no_result: stream ended with no final result event and no timeout.
     api_error: is_error AND the error text shows an API/transport failure. A model answer
     that merely mentions 503 with is_error false is NOT infra; a budget stop is not infra.
+    runaway_output: stop_reason max_tokens with no result (output-cap loop), checked first.
     (rate_limited / auth_error / contaminated are handled separately in score_run.)"""
     t = _dict(transcript)
     meta = _dict(t.get("_meta"))
@@ -115,6 +116,10 @@ def classify_infra(transcript: dict) -> str | None:
         return "timeout"
     if meta.get("no_result"):
         return "no_result"
+    # One turn hit the output-token cap with no answer: a degenerate loop (e.g. Opus writing
+    # fake tool calls as text under --tools ""), at every rung alike. Says nothing about the layer.
+    if t.get("stop_reason") == "max_tokens" and not t.get("result"):
+        return "runaway_output"
     if not t.get("is_error") or is_budget_stop(t):
         return None
     status = t.get("api_error_status")
