@@ -1,67 +1,33 @@
 # Dev-team memory log
 
-## 2026-07-13 — dev-team-auto — Item 1: Fix duplicate-run accumulation in runs/
-- **Outcome:** DONE — 1 attempt, light track, branch fix/harness-suite-defects, commit 78b0f83
-- **What happened:** Added 4-line rm -f cleanup block in run.sh after mkdir -p and before matrix run; QA verified cleanup fires before run_matrix.py call (line 53 vs 97)
-- **What worked:** Direct single-file edit; behavioral simulation of stale file removal confirmed correct
-- **What failed:** none
-- **Remember next run:** run.sh uses $RUNS_DIR variable consistently — any future cleanup additions should use that variable, not hardcoded "runs/" path
+## Standing notes
 
-## 2026-07-13 — dev-team-auto — Item 2: Mark dashboard-digest as difficulty sentinel
-- **Outcome:** DONE — 2 attempts (1 engineer + 1 fix pass), full track, branch fix/harness-suite-defects, commit ea05b36
-- **What happened:** 3-part change: meta.yaml sentinel flag, run_matrix.py rung-filter, stats.py Difficulty Anchors section. Engineer also modified score.py to propagate sentinel through score records so stats.py doesn't re-read meta
-- **What worked:** Propagating sentinel via score records (not re-reading meta.yaml in stats.py) was the right call; review caught the missing indentation guard in score.py's read_task_meta vs the one already in run_matrix.py
-- **What failed:** score.py's read_task_meta lacked the column-0 indentation guard present in run_matrix.py — description text containing "sentinel: true" would silently misclassify tasks
-- **Remember next run:** Both run_matrix.py and score.py have independent read_task_meta implementations — any parsing change must be applied to both. The column-0 guard (`if line[:1] in (" ", "\t"): continue`) is the critical safety check
+Distilled from the 2026-07-13 and 2026-07-15 (batch 2) entries and the batch-3 notes; each re-verified against main on 2026-10-12.
 
-## 2026-07-13 — dev-team-auto — Item 3: Remove "elevate" from portfolio-writeup blacklist
-- **Outcome:** DONE — 1 attempt, trivial track, branch fix/harness-suite-defects, commit 047f4f8
-- **What happened:** Removed "elevate" from check.sh blacklist; verified buzz_hits=[] for technical context; cutting-edge still triggers exit 1
-- **What worked:** Direct single-file edit; behavioral spot-check confirmed both sides in one python3 call
-- **What failed:** Initially edited main checkout instead of worktree — edits for items on a worktree branch must be made in the worktree path
-- **Remember next run:** Changes always belong on the worktree branch path (`.claude/worktrees/fix-harness-suite-defects/`), not the main checkout. Main checkout tracks a different branch and won't be merged
+**Harness parsing and filtering**
+- `run_matrix.py` and `score.py` each have their own `read_task_meta`; any meta.yaml parsing change goes in both. The critical safety check is the column-0 guard (`if line[:1] in (" ", "\t"): continue`), so indented prose like "sentinel: true" inside a description can't misclassify a task.
+- A new filter helper (`_effective_scores`, `_is_sentinel`) must be applied at every site that builds a score table. `cross_model_section` is a separate code path from `render_markdown` and was missed once. Grep for the unfiltered `scores` / `all_scores` variable before calling a filtering change done.
+- `verdict_section(data, scores)` never uses `data`; only `scores` is used. Consider cleaning it up if you touch the function.
+- Any new `_meta` detection field needs a fallback in `score.py` so re-scoring old transcripts works. `rate_limited` is the model: use the stamped flag if present, else detect inline from the result text.
+- The rate-limit retry loop in `run_one()` re-parses the transcript on every attempt. This is intentional, because the parse is how it detects 429. `events` is rebuilt fresh by `_parse_stream` each time.
+- `run.sh` builds paths from `$RUNS_DIR` (and `$TASKS_DIR`, `$CONFIGS_DIR`, `$SCORECARDS_DIR`). Add cleanup with those variables, not hardcoded `runs/`.
 
-## 2026-07-13 — dev-team-auto — Item 4: Add repeat support for noisy tasks
-- **Outcome:** DONE — 2 attempts (1 engineer + 1 fix), full track, branch fix/harness-suite-defects, commit 3c3de4f
-- **What happened:** 5-file change adding repeat loop in run_matrix, majority-vote in score.py, (K/N) annotation in stats.py. Review caught premature majority on partial groups and missing _effective_scores call in cross_model_section
-- **What worked:** Grouping by (task, rung, model) tuple correct; workspace isolation per repeat run (separate .ws dirs) was already correct; cost aggregation with `or 0` handled None correctly
-- **What failed:** score.py emitted majority record even when n < repeat_total (partial transcript set); cross_model_section in stats.py skipped the _effective_scores filter unlike the other 4 call sites
-- **Remember next run:** When adding a new filter helper (_effective_scores, _is_sentinel), search for ALL sites that build score tables — cross_model_section is a separate code path from render_markdown's main pipeline and is easy to miss. grep for the unfiltered `scores` or `all_scores` variable before declaring a filtering change complete
+**Eval behavior and scoring**
+- A multi_turn task without `multi_turn: true` in meta.yaml runs every rung as one-shot JSON, so `num_events` is always 0. That symptom is a meta.yaml bug, not a streaming bug. Check meta.yaml first.
+- Opus spot check is on by default (`OPUS_SPOTCHECK=1`; opt out with `--no-opus-spotcheck`). If `cross_model_section` shows `opus=none`, check for the opt-out flag or a reverted default before debugging plumbing.
+- Re-scoring old transcripts cannot give real pass/fail for coding tasks that need a workspace. `run.sh` deletes `runs/*.ws` after scoring (unless `--keep-ws`), so `pir-workload-feature` shows all `WORKSPACE_DIR` infra on re-score. Only the original score has real results.
+- `pir-workload-feature`: `check.sh` is deterministic (5/5 PASS on the correct impl, 5/5 FAIL on the inverted ratio; CONTRACT-NOTE.md section D). The rung4 `skill_fired=False` is a routing/config failure, not evidence against `baseball-research`. Do NOT prune `baseball-research` on iter-4 data. On main, rung 4's `CURATED_SKILLS` (`harness/build_configs.sh`) is only dev-team, dev-team-auto and dt-* skills. `baseball-research` is not loaded, so it can never fire there even though the task's meta.yaml names it as `curated_skill`. The routing fixes (`8bc292b` explicit skill invoke at rung 4, `dd7b371` quarantine routing failures in the scorecard, `9816b21` detect skill_fired for single-turn tasks, `2937cce` auth-detector false positives) exist only on branch `worktree-rung4-skill-directive`, not on main.
 
-## 2026-07-13 — dev-team-auto — Item 5: Add harness unit tests for pure functions
-- **Outcome:** DONE — 1 attempt, light track, branch fix/harness-suite-defects, commit 91ed75f
-- **What happened:** Created test_harness_pure_fns.py covering detect_skill_fired, _parse_stream, looks_like_auth_error; 17 checks, all pass
-- **What worked:** Reading the actual function implementations before writing tests — the PLAN.md spec described expected behavior ("Authentication" → True, "403" → True) that didn't match actual patterns (authentication_error, unauthorized)
-- **What failed:** none
-- **Remember next run:** PLAN.md test specs for function behavior can be illustrative rather than literal — always read the actual implementation before writing tests, not just the spec
+**Task authoring**
+- PLAN.md test specs can be illustrative rather than literal. Read the actual implementation before writing tests (e.g. the auth patterns are `authentication_error` / `unauthorized`, not "Authentication" / "403").
+- Best discriminators are preferences that run counter to general best practice, or system-specific formats. Validate rung1 before trusting a draft. Bare Claude already volunteers tradeoffs, so `memory-tradeoffs-reflex` was cut for being non-discriminating.
+- `memory-terse-response-policy` is still a NEEDS-VALIDATION draft in `tasks/_draft/knowledge/`. Medium risk: Claude 4.x may already be terse at rung1, so validate rung1 first.
+- Live in `tasks/knowledge/`: `memory-notes-format`, `claude-md-comment-gate`, `dt-qa-verdict-format`, `dt-review-severity-policy`. `tasks/_draft/knowledge/` still holds stale NEEDS-VALIDATION copies of the last two; the live copies are authoritative. `tasks/knowledge/claude-md-comment-gate/meta.yaml` still says `STATUS: NEEDS-VALIDATION` although it was validated. The validation process is in `tasks/_draft/knowledge/REVIEW.md` (the older `tasks/_draft/REVIEW.md` covers hard-task batch #1).
 
-## 2026-07-15 — dev-team-auto — Item 1: Fix pir-workload-feature timeout + two-sided validation
-- **Outcome:** DONE — 1 attempt, full track, branch feat/evals-batch2, commit 64218dd
-- **What happened:** Root cause: meta.yaml missing `multi_turn: true` → runs used --output-format json (one-shot) → bare rung1 timed out at 300s with 0 events. Fix: added `multi_turn: true` + `timeout_sec: 900`. Two-sided check.sh validation run: PASS on cf84a6b (real acwr_7_28), FAIL on chronic÷acute inversion. STATUS updated in meta.yaml and CONTRACT-NOTE.md.
-- **What worked:** Read analyze-report for root cause, then direct implementation. check.sh already worked correctly; the harness plumbing was the bug.
-- **What failed:** None — single attempt converged.
-- **Remember next run:** When a multi_turn task is missing `multi_turn: true` in meta.yaml, ALL rungs run as one-shot JSON (num_events always 0). The 0-event symptom is a meta.yaml parsing bug, not a streaming bug. Check meta.yaml before debugging the harness.
+**Process**
+- Make each item's edits in that item's worktree, never the main checkout, which tracks a different branch and won't be merged. Check `git worktree list` and the current branch first.
 
-## 2026-07-15 — dev-team-auto — Item 2: Wire Opus spot check by default
-- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
-- **What happened:** OPUS_SPOTCHECK flag existed (added in 48d7d20) but defaulted to 0. Changed default to 1 and renamed the opt-in flag to an opt-out --no-opus-spotcheck. Comment updated to reflect new default.
-- **What worked:** Single-line change + usage comment update. All downstream plumbing (run_matrix.py model loop, stats.py cross_model_section) already handled multiple models correctly.
-- **What failed:** None.
-- **Remember next run:** The Opus spot check plumbing was always there — the only missing piece was the default. If cross_model_section ever shows "opus=none" again, first check whether OPUS_SPOTCHECK reverted to 0 or --no-opus-spotcheck was passed.
-
-## 2026-07-15 — dev-team-auto — Item 3: No-signal warning in stats.py
-- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
-- **What happened:** Added no-signal detection at top of verdict_section() body. Computed inline from scores without adding a parameter to the function. Warning appears as first content line when every rung-pair is a tie across all models.
-- **What worked:** Inline computation (no signature change). The logic mirrors sign_test() — check if any task flips between two rungs for any model.
-- **What failed:** None.
-- **Remember next run:** The verdict_section() `data` parameter is UNUSED in the current implementation (the function only uses `scores`). If adding features, note this and consider whether to clean it up.
-
-## 2026-07-15 — dev-team-auto — Item 4: Draft discriminating tasks
-- **Outcome:** DONE — 1 attempt, light track, branch feat/evals-batch2, commit 64218dd
-- **What happened:** Created 3 NEEDS-VALIDATION drafts in tasks/_draft/knowledge/: memory-notes-format (rung3 — one-file-per-doc convention vs generic advice), claude-md-comment-gate (rung2 — no-WHAT-comments policy vs document-your-code default), memory-tradeoffs-reflex (rung3 — proactive tradeoffs reflex; highest risk of being non-discriminating). REVIEW.md with validation instructions included.
-- **What worked:** Targeting preferences that are counter-intuitive vs general best practices (most reliable discrimination). Flagging the highest-risk draft explicitly.
-- **What failed:** None in authoring; validation not done (NEEDS-VALIDATION by design).
-- **Remember next run:** Draft 3 (memory-tradeoffs-reflex) has explicit warning that modern Claude models may already volunteer tradeoffs — validate rung1 behavior before trusting this one. If it doesn't discriminate, cut it. Draft 1 and 2 are higher-confidence discriminators.
+## Recent runs
 
 ## 2026-07-15 16:00 — dev-team-auto — Item 1: Classify 429 rate limits as infra, not task fails
 - **Outcome:** DONE — 1 attempt, light track, branch feat/harness-batch3, commit c345118
