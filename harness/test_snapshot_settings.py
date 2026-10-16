@@ -62,6 +62,19 @@ def test_strip():
     check("no live os path left", "/os/" in str(out).replace(SNAP, ""), False)
 
 
+def test_strip_effort():
+    live = {**LIVE, "effortLevel": "medium",
+            "modelSettings": {"opus": {"effortLevel": "high", "other": 1}, "sonnet": {"effortLevel": "low"}, "x": "y"}}
+    out = strip_settings(live, SNAP)
+    check("top-level effortLevel dropped", "effortLevel" in out, False)
+    check("modelSettings effort dropped, rest kept", out["modelSettings"],
+          {"opus": {"other": 1}, "sonnet": {}, "x": "y"})
+    check("model kept", out["model"], "opus")
+    check("input not mutated", live["modelSettings"]["opus"]["effortLevel"], "high")
+    check("full layer carries no effort", "effortLevel" in str(layer_settings("full", live, SNAP)), False)
+    check("no modelSettings ok", "effortLevel" in strip_settings({"effortLevel": "max"}, SNAP), False)
+
+
 def test_layers():
     check("claude-md", layer_settings("claude-md", LIVE, SNAP), {"autoMemoryEnabled": False})
     for layer in ("memory", "skills"):
@@ -159,6 +172,7 @@ def test_layer_env():
 
 if __name__ == "__main__":
     test_strip()
+    test_strip_effort()
     test_layers()
     test_pairs()
     test_cells()

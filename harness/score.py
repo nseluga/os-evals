@@ -12,7 +12,8 @@ Contract for transcript JSON (from `claude -p --output-format json`):
   num_turns       — turn count
   total_cost_usd  — dollar cost
   usage.iterations — list of per-turn stats (may be empty)
-  _meta.task / _meta.rung / _meta.model — injected by run_matrix.py
+  _meta.task / _meta.rung / _meta.model / _meta.effort — injected by run_matrix.py
+  modelUsage — per-model token counts; summed for total_tokens (usage is the fallback)
   _meta.contaminated — true => not scored (infra_reason "contaminated")
 
 Outputs:
@@ -57,6 +58,13 @@ def extract_stats(transcript: dict) -> dict:
     output_tok = _num(usage.get("output_tokens"))
     total_input = input_tok + cache_read + cache_create
 
+    # `usage` omits subagent/secondary-model traffic; the result event's `modelUsage` has every model.
+    mu = [_dict(v) for v in _dict(transcript.get("modelUsage")).values()]
+    total_tokens = total_input + output_tok
+    if mu:
+        total_tokens = sum(_num(m.get(k)) for m in mu for k in (
+            "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+
     return {
         "turns": _num(transcript.get("num_turns")),
         "input_tokens": input_tok,
@@ -64,7 +72,7 @@ def extract_stats(transcript: dict) -> dict:
         "cache_create_tokens": cache_create,
         "total_input_tokens": total_input,
         "output_tokens": output_tok,
-        "total_tokens": total_input + output_tok,
+        "total_tokens": total_tokens,
         "cost_usd": _num(transcript.get("total_cost_usd")),
         "is_error": bool(transcript.get("is_error", False)),
         "stop_reason": transcript.get("stop_reason") or "",
@@ -193,7 +201,10 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     meta = _dict(transcript.get("_meta"))
     task = meta.get("task") or run_file.stem.split("_")[1]
     rung = meta.get("rung", 0)
-    model = meta.get("model", "unknown")
+    base_model = meta.get("model", "unknown")
+    effort = meta.get("effort") or _meta_from_filename(run_file.name)["effort"]
+    # ponytail: effort folded into `model` so every existing grouping splits by it — a separate key is the upgrade
+    model = f"{base_model}:{effort}"
     snippet = str(transcript.get("result") or "")[:200]
 
     stats = extract_stats(transcript)
@@ -224,6 +235,8 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "task": task,
         "rung": rung,
         "model": model,
+        "base_model": base_model,
+        "effort": effort,
         "curated_skill": task_meta["curated_skill"],
         "category": task_meta["category"],
         "contaminated": task_meta["contaminated"],
@@ -336,19 +349,27 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     }
 
 
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 def _meta_from_filename(name: str) -> dict:
-    """Best-effort task/rung/model/repeat from `<ts>_<task>_<rung>_<model>[_rN].json`."""
+    """Best-effort task/rung/model/effort/repeat from `<ts>_<task>_<rung>_<model>[_<effort>][_rN].json`.
+
+    No effort segment (pre-effort filenames) -> effort "default"."""
     stem = re.sub(r"\.json$", "", name)
     rep = re.search(r"_r(\d+)$", stem)
     if rep:
         stem = stem[: rep.start()]
     parts = stem.split("_")
+    effort = "default"
+    if len(parts) > 4 and parts[-1] in EFFORTS:
+        effort = parts.pop()
     task = parts[1] if len(parts) > 1 else stem
     rung = parts[2] if len(parts) > 2 else "unknown"
     m = re.fullmatch(r"rung(\d+)", rung)
     if m:
         rung = int(m.group(1))
-    return {"task": task, "rung": rung, "model": "_".join(parts[3:]) or "unknown",
+    return {"task": task, "rung": rung, "model": "_".join(parts[3:]) or "unknown", "effort": effort,
             "repeat_index": int(rep.group(1)) if rep else None}
 
 
@@ -369,7 +390,8 @@ def exception_record(run_file: Path, tasks_dir: Path, exc: Exception) -> dict:
     return {
         "file": run_file.name, "task": task,
         "rung": meta.get("rung") if meta.get("rung") is not None else fn["rung"],
-        "model": meta.get("model") or fn["model"],
+        "model": f"{meta.get('model') or fn['model']}:{meta.get('effort') or fn['effort']}",
+        "base_model": meta.get("model") or fn["model"], "effort": meta.get("effort") or fn["effort"],
         "curated_skill": tm["curated_skill"], "category": tm["category"],
         "contaminated": tm["contaminated"], "group": tm["group"], "sentinel": tm["sentinel"],
         "is_repeat_individual": ri is not None, "repeat_index": ri,

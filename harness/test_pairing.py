@@ -67,6 +67,105 @@ def test_non_adjacent_layers_compare_and_empty_message():
     check("no discriminating verdict when empty", "NO DISCRIMINATING SIGNAL" in md, False)
 
 
+def test_filename_round_trip():
+    import score
+    f = score._meta_from_filename
+    check("effort segment", f("20261015T010203Z_canary-skill_bare_haiku_low.json"),
+          {"task": "canary-skill", "rung": "bare", "model": "haiku", "effort": "low", "repeat_index": None})
+    check("effort + repeat + multiword model", f("20261015T010203Z_t_full_claude_opus_4_7_xhigh_r2.json")["effort"], "xhigh")
+    check("multiword model kept whole", f("20261015T010203Z_t_full_claude_opus_4_7_xhigh_r2.json")["model"], "claude_opus_4_7")
+    check("repeat index", f("20261015T010203Z_t_full_claude_opus_4_7_xhigh_r2.json")["repeat_index"], 2)
+    check("old filename -> default", f("20261001T010203Z_t_full_opus.json")["effort"], "default")
+    check("old multiword -> default", f("20261001T010203Z_t_full_claude_sonnet_4_6_r1.json")["model"], "claude_sonnet_4_6")
+    check("old legacy rung", f("20260901T010203Z_t_rung2_sonnet.json")["rung"], 2)
+    check("effort-named model is not an effort", f("20261001T010203Z_t_full_max.json")["effort"], "default")
+
+
+def _run_file(tmp, name, meta, extra=None):
+    d = Path(tmp)
+    (d / "t" / "x").mkdir(parents=True, exist_ok=True)
+    (d / "t" / "x" / "prompt.md").write_text("p")
+    (d / "t" / "x" / "check.sh").write_text("#!/bin/bash\nexit 0\n")
+    (d / "t" / "x" / "check.sh").chmod(0o755)
+    f = d / name
+    f.write_text(json.dumps({"type": "result", "result": "ok", "num_turns": 1, "total_cost_usd": 0.01,
+                             "usage": {"input_tokens": 1, "output_tokens": 2}, "_meta": meta, **(extra or {})}))
+    return f, d / "t"
+
+
+def test_score_effort_and_model_usage():
+    import score
+    with tempfile.TemporaryDirectory() as t:
+        mu = {"claude-haiku-4-5": {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 100,
+                                    "cacheCreationInputTokens": 1000, "costUSD": 0.01},
+              "claude-sonnet-4-6": {"inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3,
+                                     "cacheCreationInputTokens": 4}}
+        f, tasks = _run_file(t, "20261015T010203Z_x_bare_haiku_low.json",
+                             {"task": "x", "rung": "bare", "model": "haiku", "effort": "low"}, {"modelUsage": mu})
+        r = score.score_run(f, tasks)
+        check("model = base:effort", (r["model"], r["base_model"], r["effort"]), ("haiku:low", "haiku", "low"))
+        check("total_tokens sums modelUsage across models", r["total_tokens"], 10 + 20 + 100 + 1000 + 1 + 2 + 3 + 4)
+        check("old usage fields kept", (r["input_tokens"], r["output_tokens"]), (1, 2))
+        f, tasks = _run_file(t, "20261015T010203Z_x_bare_haiku_low2.json",
+                             {"task": "x", "rung": "bare", "model": "haiku"})
+        r = score.score_run(f, tasks)
+        check("no modelUsage -> usage fallback", r["total_tokens"], 3)
+        check("old _meta w/o effort -> default", r["model"], "haiku:default")
+        f, tasks = _run_file(t, "20261015T010203Z_x_bare_haiku_max.json", {"task": "x", "rung": "bare", "model": "haiku"})
+        check("effort from filename when _meta lacks it", score.score_run(f, tasks)["model"], "haiku:max")
+
+
+def _crow(task, model, cost, rung="bare", effort="high", passed=True, **kw):
+    return {"task": task, "rung": rung, "model": f"{model}:{effort}", "base_model": model, "effort": effort,
+            "passed": passed, "cost_usd": cost, **kw}
+
+
+def test_model_ratios_and_effort_section():
+    # opus/sonnet ratios 2, 3, 10: median 3, mean 5 (a median->mean mutant must fail)
+    rows = [_crow("a", "sonnet", 1.0), _crow("b", "sonnet", 2.0), _crow("c", "sonnet", 1.0),
+            _crow("a", "opus", 2.0), _crow("b", "opus", 6.0), _crow("c", "opus", 10.0),
+            _crow("a", "haiku", 0.5, effort="low")]  # haiku only at a different effort -> unmatched
+    r = stats.model_ratios(rows)
+    check("median ratio over matched cells", r["opus"], 3.0)
+    check("no matched cell -> UNMEASURED", r["haiku"], "UNMEASURED")
+    check("sonnet not listed", "sonnet" in r, False)
+    check("no sonnet at all -> UNMEASURED", stats.model_ratios([_crow("a", "opus", 2.0)]), {"opus": "UNMEASURED"})
+    check("infra/sentinel excluded", stats.model_ratios(rows + [_crow("c", "opus", 99, infra_error=True)]), r)
+    # repeat-3 cell: 3 individuals (1.0 each) + majority record carrying the SUM (3.0); opus is repeat-1 at 2.0
+    rep3 = [_crow("a", "sonnet", 1.0, is_repeat_individual=True, repeat_index=i, repeat_total=3) for i in (1, 2, 3)]
+    rep3.append(_crow("a", "sonnet", 3.0, repeat_majority=True, repeat_total=3))
+    check("repeat-3 cell is per-run, not summed", stats.model_ratios(rep3 + [_crow("a", "opus", 2.0)]), {"opus": 2.0})
+    rep3[-1]["infra_error"] = True  # majority flagged infra must not hide valid individuals
+    check("per-run cost uses individuals", stats.model_ratios(rep3 + [_crow("a", "opus", 2.0)]), {"opus": 2.0})
+    old = [{"task": "a", "rung": "bare", "model": "sonnet", "passed": True, "cost_usd": 1.0},
+           {"task": "a", "rung": "bare", "model": "opus", "passed": True, "cost_usd": 3.0}]
+    check("old records (no effort) match as default", stats.model_ratios(old), {"opus": 3.0})
+    md = "\n".join(stats.model_ratios_section(rows))
+    check("section prints UNMEASURED", "- haiku: UNMEASURED" in md and "- opus: 3.00x" in md, True)
+
+    # effort sign-test: low fails b, high passes both; medium in the middle
+    rows = [_crow("a", "sonnet", 1, effort="low"), _crow("b", "sonnet", 1, effort="low", passed=False),
+            _crow("a", "sonnet", 2, effort="medium"), _crow("b", "sonnet", 2, effort="medium", passed=False),
+            _crow("a", "sonnet", 3), _crow("b", "sonnet", 3)]
+    lines = stats.effort_section(rows)
+    body = "\n".join(lines)
+    check("adjacent pairs only", ("low -> medium" in body, "medium -> high" in body, "low -> high" in body),
+          (True, True, False))
+    check("medium->high: high won 1/1", "medium -> high** higher effort won 1/1 (ties=1)" in body, True)
+    check("low->medium: n/a-free tie", "low -> medium** higher effort won n/a (no discriminating tasks)" in body, True)
+    rp = []
+    for e, c in (("low", 1), ("high", 2)):
+        rp += [_crow("a", "sonnet", c, effort=e, is_repeat_individual=True, repeat_index=i, repeat_total=3) for i in (1, 2, 3)]
+        rp.append(_crow("a", "sonnet", 3 * c, effort=e, repeat_majority=True, repeat_total=3))
+    check("effort avg cost is per run", "avg cost/run $1.0000 -> $2.0000" in "\n".join(stats.effort_section(rp)), True)
+    check("single effort -> no section", stats.effort_section([_crow("a", "sonnet", 1)]), [])
+    check("default-effort records ignored", stats.effort_section(
+        [_crow("a", "sonnet", 1, effort="default"), _crow("a", "sonnet", 1)]), [])
+    data = {"os_sha": "x", "scores": rows}
+    md = stats.render_markdown(data, stats.compute_stats(rows), stats.token_summary(rows))
+    check("wired into scorecard", "## Effort Sign-Test" in md, True)
+
+
 def test_banner():
     rows = [_row("t1", "bare", True)]
     data = {"os_sha": "x", "scores": rows, "scored_run_ids": ["20260101T000000Z_a.json"]}
@@ -130,6 +229,9 @@ if __name__ == "__main__":
     test_ab_pairing_with_sentinel_bare()
     test_legacy_int_pairs()
     test_non_adjacent_layers_compare_and_empty_message()
+    test_filename_round_trip()
+    test_score_effort_and_model_usage()
+    test_model_ratios_and_effort_section()
     test_banner()
     test_reason_lines_and_single_repeat()
     test_run_sh_rejects_same_sha_twice()

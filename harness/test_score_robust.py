@@ -169,7 +169,7 @@ def test_main_never_drops_a_run():
         check("one score_exception", len(bad), 1)
         b = bad[0]
         check("exception record identity", (b["task"], b["rung"], b["model"], b["repeat_index"]),
-              ("demo", 2, "claude_sonnet_4_6", 2))
+              ("demo", 2, "claude_sonnet_4_6:default", 2))
         check("exception text kept", "JSONDecodeError" in b["check_output"], True)
         check("exception excluded", (b["infra_error"], b["passed"]), (True, False))
         # usage: null run alone scores cleanly with exit 0
