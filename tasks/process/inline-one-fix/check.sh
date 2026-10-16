@@ -5,8 +5,8 @@ set -uo pipefail
 #           no Agent/Task spawn and <= MAX_TURNS assistant turns.
 # FAIL (1): any of the above fails.
 # EXIT 2: WORKSPACE_DIR unset/missing, or infra problem (no node, no test dir).
-# Trace: $TRACE_FILE (stream-json); set but missing -> exit 2. Unset -> $WORKSPACE_DIR/trace.jsonl only
-# for fixture paths (*/tests/*, */os-evals-validate/*, under $VALIDATE_TMP); otherwise the trace checks are skipped.
+# Trace: $TRACE_FILE only (stream-json); set but missing -> exit 2; unset -> the trace checks are skipped.
+# The workspace is model-writable and is never read for a trace.
 # Needs node and python3. Reads (ignores) the transcript JSON on stdin.
 
 TASK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,15 +25,6 @@ TRACE=""
 if [ -n "${TRACE_FILE:-}" ]; then
     [ -f "$TRACE_FILE" ] || { echo "FAIL: TRACE_FILE set but missing: $TRACE_FILE" >&2; exit 2; }
     TRACE="$TRACE_FILE"
-else
-    # Fixture fallback only (validate_checks.sh): a model-writable workspace must never feed the trace.
-    case "$WS" in
-        */tests/*|*/os-evals-validate/*) [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl" ;;
-    esac
-    # validate_checks.sh honors VALIDATE_TMP; fixtures then live under it.
-    if [ -z "$TRACE" ] && [ -n "${VALIDATE_TMP:-}" ]; then
-        case "$WS" in "$VALIDATE_TMP"/*) [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl" ;; esac
-    fi
 fi
 
 # (1) the workspace's own tests

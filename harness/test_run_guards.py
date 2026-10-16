@@ -232,7 +232,77 @@ def test_effort_in_run_id_and_meta():
     check("no init event -> model_resolved None", t["_meta"]["model_resolved"], None)
 
 
+def test_task_budget_override_and_passthrough():
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d) / "t"
+        t.mkdir()
+        (t / "meta.yaml").write_text(
+            "max_budget_usd: 6  # C1\nlayer_neutral: true\nsignals: a,b  # non-gating\n"
+            'judge_files: "src/x.mjs,test/*.test.mjs"\ndescription: |\n  max_budget_usd: 99\n  layer_neutral: false\n')
+        m = run_matrix.read_task_meta(t)
+        check("max_budget_usd parsed, indented prose ignored", m["max_budget_usd"], 6.0)
+        check("layer_neutral parsed", m["layer_neutral"], True)
+        check("signals passed through, comment stripped", m["signals"], "a,b")
+        check("judge_files passed through, quotes stripped", m["judge_files"], "src/x.mjs,test/*.test.mjs")
+        check("defaults when absent", run_matrix.read_task_meta(Path(d) / "none")["max_budget_usd"], None)
+    cmd = run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, 1.5)
+    check("meta max_budget_usd overrides CLI default", cmd[cmd.index("--max-budget-usd") + 1], "6.0")
+    cmd = run_matrix.build_cmd("m", [], {"max_budget_usd": None}, 1.5)
+    check("no meta value -> CLI default", cmd[cmd.index("--max-budget-usd") + 1], "1.5")
+    info = {}
+    _run_one('{"type":"result","is_error":false,"result":"ok"}\n', info=info)
+    check("run_one with no task cap uses build_cmd default (flag absent)", "--max-budget-usd" in info["cmd"], False)
+
+
+def test_skill_fired_agent_and_one_shot():
+    ev = [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Agent", "input": {"subagent_type": "dt-engineer", "description": "x"}}]}}]
+    check("Agent spawn naming the skill counts", run_matrix.detect_skill_fired(ev, "dt-engineer"), True)
+    check("Task spawn still counts", run_matrix.detect_skill_fired(
+        [{"message": {"content": [{"type": "tool_use", "name": "Task", "input": {"subagent_type": "dt-qa"}}]}}], "dt-qa"), True)
+    check("no match -> False", run_matrix.detect_skill_fired(ev, "ponytail"), False)
+    check("no curated skill -> None", run_matrix.detect_skill_fired(ev, ""), None)
+    # one-shot (multi_turn false) run with a curated_skill still gets skill_fired computed
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "tasks" / "t").mkdir(parents=True)
+        (d / "tasks" / "t" / "prompt.md").write_text("hi")
+        (d / "tasks" / "t" / "meta.yaml").write_text("curated_skill: dt-engineer\nlayer_neutral: true\n")
+        (d / "configs" / "bare").mkdir(parents=True)
+        out = json.dumps(ev[0]) + '\n{"type":"result","is_error":false,"result":"ok"}\n'
+        import subprocess as sp
+        orig = sp.run
+        sp.run = lambda cmd, **kw: types.SimpleNamespace(stdout=out, stderr="", returncode=0)
+        try:
+            f = run_matrix.run_one("t", "bare", "m", d / "tasks", d / "configs", d / "runs", ws_root=d / "ws")
+        finally:
+            sp.run = orig
+        meta = json.loads(f.read_text())["_meta"]
+        check("one-shot run: skill_fired computed", (meta["multi_turn"], meta["skill_fired"]), (False, True))
+        check("_meta.layer_neutral", meta["layer_neutral"], True)
+
+
+def test_layer_neutral_bare_only_dry_run():
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        (Path(d) / "configs" / "full").mkdir()
+        for name, meta in (("ln", "layer_neutral: true\n"), ("sent", "sentinel: true\n"), ("ok", "")):
+            (Path(d) / "tasks" / name).mkdir(exist_ok=True)
+            (Path(d) / "tasks" / name / "prompt.md").write_text("hi")
+            (Path(d) / "tasks" / name / "meta.yaml").write_text(meta)
+        r = _cli(*base, "--tasks", "ln,sent,ok", "--layers", "bare,full")
+        check("exit 0", r.returncode, 0)
+        out = r.stdout
+        check("layer_neutral listed on bare only", "layer_neutral: ln \u2014 bare layer only" in out, True)
+        check("ln plans 1 cell", "  ln: 1 cells" in out, True)
+        check("sentinel still bare only", "sentinel: sent \u2014 bare layer only" in out and "  sent: 1 cells" in out, True)
+        check("normal task keeps both cells", "  ok: 2 cells" in out, True)
+
+
 if __name__ == "__main__":
+    test_task_budget_override_and_passthrough()
+    test_skill_fired_agent_and_one_shot()
+    test_layer_neutral_bare_only_dry_run()
     test_parser_survives_junk()
     test_guards()
     test_load_rung_missing()

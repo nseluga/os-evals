@@ -73,6 +73,10 @@ def _is_sentinel(s: dict) -> bool:
     return bool(s.get("sentinel", False))
 
 
+def _is_layer_neutral(s: dict) -> bool:
+    return bool(s.get("layer_neutral", False))
+
+
 def _is_repeat_individual(s: dict) -> bool:
     return bool(s.get("is_repeat_individual", False))
 
@@ -94,8 +98,9 @@ def compute_stats(scores: list[dict], order=None) -> dict:
     """Group scores by task+rung, compute per-rung-pair sign tests.
 
     Sentinel tasks are excluded — they only run at rung1 and serve as difficulty
-    anchors, not as evidence about layer transitions."""
-    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
+    anchors, not as evidence about layer transitions. layer_neutral tasks (bare only) are
+    excluded the same way but stay in the frontier/cost tables."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_layer_neutral(s)]
 
     # infra_error runs are excluded from `by_task_rung` (so they can never win/lose a
     # pairwise comparison) but tracked separately so a comparison touching one is
@@ -419,7 +424,7 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
 
     Sentinel tasks are excluded from all pass-rate counts and sign-test analysis.
     Individual repeat records are excluded; majority-vote records are used instead."""
-    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_layer_neutral(s)]
     sentinel_count = len({s["task"] for s in scores if _is_sentinel(s)})
 
     lines: list[str] = ["## Verdict — does the setup earn its keep?", ""]

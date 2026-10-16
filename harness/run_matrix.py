@@ -34,6 +34,8 @@ Inputs:
 
 meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
 default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
+max_budget_usd (overrides --max-budget-usd for that task), layer_neutral (bare only, kept in the frontier),
+judge_files / signals (passed through to _meta).
 """
 
 import argparse
@@ -168,7 +170,8 @@ def read_task_meta(task_dir: Path) -> dict:
                      that skill actually fired (routing check).
     """
     out = {"timeout_sec": 1800, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
-           "default": True, "tools": ""}
+           "default": True, "tools": "", "layer_neutral": False, "max_budget_usd": None,
+           "judge_files": "", "signals": ""}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -193,6 +196,16 @@ def read_task_meta(task_dir: Path) -> dict:
             out["curated_skill"] = s.split(":", 1)[1].split("(")[0].split("#")[0].strip()
         elif s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("layer_neutral:"):
+            out["layer_neutral"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("max_budget_usd:"):  # per-task cap, overrides the CLI default (C1 needs 6)
+            try:
+                out["max_budget_usd"] = float(s.split(":", 1)[1].split("#", 1)[0].strip())
+            except ValueError:
+                pass
+        elif s.startswith(("judge_files:", "signals:")):  # passed through to _meta; other items parse them
+            k, v = s.split(":", 1)
+            out[k] = v.split(" #", 1)[0].strip().strip("'\"")
         elif s.startswith("default:"):
             out["default"] = not s.split(":", 1)[1].split("#", 1)[0].strip().lower().startswith("false")
         elif s.startswith("tools:"):
@@ -280,7 +293,7 @@ def detect_skill_fired(events: list[dict], intended_skill: str):
         if needle in name.lower():
             return True
         # Orchestrators fan out to dt-* specialists via Task sub-agents.
-        if name == "Task":
+        if name in ("Task", "Agent"):  # the spawn tool is named Agent in current CLIs
             blob = f"{inp.get('subagent_type', '')} {inp.get('description', '')}".lower()
             if needle in blob:
                 return True
@@ -487,6 +500,8 @@ def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
         cmd.extend(["--effort", effort])
     if task_meta.get("tools") == "none":
         cmd.extend(["--tools", ""])
+    if task_meta.get("max_budget_usd") is not None:  # meta.yaml max_budget_usd beats the CLI default
+        max_budget_usd = task_meta["max_budget_usd"]
     if max_budget_usd is not None:
         cmd.extend(["--max-budget-usd", str(max_budget_usd)])
     cmd.extend(["--dangerously-skip-permissions"])
@@ -645,7 +660,7 @@ def run_one(
 
     elapsed_sec = round(time.monotonic() - _t0, 1)
 
-    skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
+    skill_fired = detect_skill_fired(events, intended_skill)  # None when the task has no curated_skill
     isolated = "HOME" in env_vars
     forbidden, allowed, tilde_root = contamination_rules(
         REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(run_dir), isolated,
@@ -678,6 +693,9 @@ def run_one(
         "no_result": no_result,
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
+        "layer_neutral": task_meta["layer_neutral"],
+        "judge_files": task_meta["judge_files"],
+        "signals": task_meta["signals"],
         "auth_error": auth_error,
         "rate_limited": rate_limited,
         "num_events": len(events),
@@ -861,6 +879,9 @@ def main() -> int:
         task_cells = [c for c in cells if c[0] == "bare" or not task_meta["sentinel"]]
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
+        if task_meta["layer_neutral"]:  # bare only like a sentinel, but kept in the frontier/cost tables
+            task_cells = [c for c in task_cells if c[0] == "bare"]
+            print(f"  layer_neutral: {task} — bare layer only")
         plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
 
     if args.dry_run:

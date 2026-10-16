@@ -139,13 +139,15 @@ def classify_infra(transcript: dict) -> str | None:
 
 
 def run_check(
-    task: str, transcript_text: str, tasks_dir: Path, workspace_dir: str = ""
+    task: str, transcript_text: str, tasks_dir: Path, workspace_dir: str = "", trace_file: str = ""
 ) -> tuple[bool, str, int]:
     """Run tasks/{task}/check.sh with transcript on stdin. Returns (passed, output).
 
     For coding tasks, workspace_dir (from transcript _meta) is passed as WORKSPACE_DIR
     so filesystem/test-based checks can inspect what the model wrote. Text-only checks
-    ignore it (they read only stdin), keeping the original contract a strict subset."""
+    ignore it (they read only stdin), keeping the original contract a strict subset.
+    trace_file (the run's <stem>.trace.jsonl, when it exists) is exported as TRACE_FILE;
+    trace checks skip when it is unset and exit 2 when it is set but missing."""
     check_sh = tasks_dir / task / "check.sh"
     if not check_sh.exists():
         return False, f"check.sh not found: {check_sh}", 2
@@ -153,6 +155,9 @@ def run_check(
     env = {**os.environ}
     if workspace_dir:
         env["WORKSPACE_DIR"] = workspace_dir
+    env.pop("TRACE_FILE", None)  # never inherit a stray value from the caller's shell
+    if trace_file and Path(trace_file).is_file():
+        env["TRACE_FILE"] = str(trace_file)
 
     result = subprocess.run(
         [str(check_sh)],
@@ -172,7 +177,8 @@ def run_check(
 def read_task_meta(tasks_dir: Path, task: str) -> dict:
     """Pull curated_skill + category from a task's meta.yaml (best-effort, no yaml dep)."""
     meta_file = tasks_dir / task / "meta.yaml"
-    out = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False}
+    out = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False,
+           "layer_neutral": False}
     if not meta_file.exists():
         return out
     for line in meta_file.read_text().splitlines():
@@ -188,6 +194,8 @@ def read_task_meta(tasks_dir: Path, task: str) -> dict:
             out["contaminated"] = s.split(":", 1)[1].strip().lower().startswith("true")
         if s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        if s.startswith("layer_neutral:"):
+            out["layer_neutral"] = s.split(":", 1)[1].strip().lower().startswith("true")
     return out
 
 
@@ -268,6 +276,7 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "contaminated": task_meta["contaminated"],
         "group": task_meta["group"],
         "sentinel": task_meta["sentinel"],
+        "layer_neutral": task_meta["layer_neutral"],
         "wall_clock_sec": meta.get("elapsed_sec", 0),
         "multi_turn": multi_turn,
         "timed_out": timed_out,
@@ -357,7 +366,8 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
 
     unrunnable = None
     try:
-        passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
+        passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir,
+                                               str(run_file.with_name(run_file.stem + ".trace.jsonl")))
     except subprocess.TimeoutExpired:
         passed, check_output, check_rc, unrunnable = False, "check.sh timed out", 2, "check_timeout"
     except OSError as e:  # FileNotFoundError, PermissionError, bad interpreter, ...
@@ -414,7 +424,8 @@ def exception_record(run_file: Path, tasks_dir: Path, exc: Exception) -> dict:
     try:
         tm = read_task_meta(tasks_dir, task)
     except Exception:
-        tm = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False}
+        tm = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False,
+              "layer_neutral": False}
     ri = meta.get("repeat_index") if meta.get("repeat_index") is not None else fn["repeat_index"]
     return {
         "file": run_file.name, "task": task,
@@ -423,6 +434,7 @@ def exception_record(run_file: Path, tasks_dir: Path, exc: Exception) -> dict:
         "base_model": meta.get("model") or fn["model"], "effort": meta.get("effort") or fn["effort"],
         "curated_skill": tm["curated_skill"], "category": tm["category"],
         "contaminated": tm["contaminated"], "group": tm["group"], "sentinel": tm["sentinel"],
+        "layer_neutral": tm.get("layer_neutral", False),
         "is_repeat_individual": ri is not None, "repeat_index": ri,
         "repeat_total": meta.get("repeat_total"),
         "total_tokens": 0, "cost_usd": 0, "turns": 0, "passed": False, "check_rc": 2,
