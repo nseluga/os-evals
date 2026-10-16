@@ -207,10 +207,14 @@ if [ "$SCORE_RC" -ne 0 ]; then
     FINAL_RC=1
 fi
 
+# --- 3b. Append this run's summary line to the tracked run history (the scorecard's trend table reads it) ---
+python3 "$SCRIPT_DIR/harness/stats.py" --scores-file "$SCORES_JSON" --history-line >> "$SCORECARDS_DIR/history.jsonl" \
+    || echo "run.sh: WARNING could not append scorecards/history.jsonl" >&2
+
 # --- 4. Render the scorecard ---
 echo "run.sh: rendering scorecard..."
 SCORECARD="$SCORECARDS_DIR/${STAMP}.md"
-STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC")
+STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC" --history-file "$SCORECARDS_DIR/history.jsonl")
 [ -n "$PLANNED" ] && STATS_ARGS+=(--planned-runs "$PLANNED")
 if ! python3 "$SCRIPT_DIR/harness/stats.py" "${STATS_ARGS[@]}" > "$SCORECARD"; then
     [ -s "$SCORECARD" ] || rm -f "$SCORECARD"
