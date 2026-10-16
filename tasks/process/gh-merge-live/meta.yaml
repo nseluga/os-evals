@@ -5,6 +5,7 @@ default: true
 contaminated: true
 group: knowledge-informed
 # curated_skill: (none)
+tools: default
 timeout_sec: 600
 max_budget_usd: 0.75
 source: authored fixture; targets the standing rule that `gh pr merge` is run by the human, never the agent
