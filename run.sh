@@ -21,6 +21,12 @@ set -euo pipefail
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
 #   ./run.sh --judge                      # after the matrix, grade rubric tasks with the Opus judge (appendix only)
 #
+# Auth: the OAuth token lives only in macOS keychain item `os-evals-claude-token` (never on disk);
+# run_matrix reads it once per run and injects CLAUDE_CODE_OAUTH_TOKEN into each claude process
+# (--dry-run needs no token). CLAUDE_CODE_OAUTH_TOKEN already in the environment overrides the
+# keychain read (non-Mac/CI path; the memory hook's nested session still reads the keychain only).
+# Missing both -> run.sh exits 2 before archiving, naming the `security add-generic-password` fix.
+#
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
 # a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
 #
@@ -169,6 +175,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
+# --- Token presence (no value read): refuse before the archive step moves anything ---
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || security find-generic-password -s os-evals-claude-token >/dev/null 2>&1 || {
+    echo "run.sh: ERROR no auth token: keychain item os-evals-claude-token missing and CLAUDE_CODE_OAUTH_TOKEN unset;" \
+         "fix: security add-generic-password -a os-evals -s os-evals-claude-token -w <token>" >&2
+    exit 2
+}
+
 # --- Preflight (free dry run): refuse before anything is moved or spent ---
 # Catches an unbuilt snapshot (--no-build after ~/os moved), unknown layers and draft tasks.
 PRE_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run 2>&1)" || {
@@ -176,6 +189,12 @@ PRE_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry
     echo "run.sh: ERROR preflight failed; nothing was run, moved or scored" >&2
     exit 2
 }
+# A pre-1.8 snapshot only warns in the dry run; refuse it here (its memory hook would have no auth).
+if grep -q 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT"; then
+    grep 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT" >&2
+    echo "run.sh: ERROR pre-1.8 snapshot; nothing was run, moved or scored" >&2
+    exit 2
+fi
 PLANNED="$(echo "$PRE_OUT" | sed -n 's/^total runs: *\([0-9][0-9]*\).*/\1/p' | tail -1)"
 
 mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"

@@ -27,12 +27,12 @@ set -euo pipefail
 # Personal overlay (gitignored files symlinked from ~/personal-os) is copied from live state
 # into src/ when present, also constant across SHAs. Plugins are stripped (known gap).
 #
-# Auth: prefers a long-lived token in keychain item `os-evals-claude-token`
-# (CLAUDE_CODE_OAUTH_TOKEN); falls back to the ~1h OAuth accessToken from
-# `Claude Code-credentials` (ANTHROPIC_AUTH_TOKEN). To mint and store the long-lived one
-# (Nate runs these; this script never does):
+# Auth: NO token is written to disk. rung.env holds only CLAUDE_CONFIG_DIR/HOME/GIT_CONFIG_GLOBAL.
+# The token lives in keychain item `os-evals-claude-token`; harness/run_matrix.py reads it once per
+# process and injects it into the claude subprocess env, and the memory hook wrapper (see
+# snapshot_settings._ENV_WRAP) re-reads it. To mint and store it (Nate runs these; this script never does):
 #   claude setup-token
-#   security add-generic-password -U -s os-evals-claude-token -a "$USER" -w '<token>'
+#   security add-generic-password -a os-evals -s os-evals-claude-token -w '<token>'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -62,25 +62,6 @@ echo "build_configs.sh: os sha=$SHA -> $BASE"
 if [ "$SHA" = "$(git -C "$OS_DIR" rev-parse --short HEAD)" ]; then
     n_dirty="$(git -C "$OS_DIR" status --porcelain | wc -l | tr -d ' ')"
     [ "$n_dirty" -gt 0 ] && echo "build_configs.sh: WARNING snapshot is the committed state of HEAD; $n_dirty uncommitted files in $OS_DIR are not included"
-fi
-
-# --- auth (value never printed) ---
-AUTH_ENV=""
-if TOKEN="$(security find-generic-password -s os-evals-claude-token -w 2>/dev/null)" && [ -n "$TOKEN" ]; then
-    TOKEN="$(printf '%s' "$TOKEN" | tr -d '\n')"
-    AUTH_ENV="CLAUDE_CODE_OAUTH_TOKEN=$TOKEN"
-    echo "build_configs.sh: auth: long-lived keychain item os-evals-claude-token"
-else
-    TOKEN="$(python3 -c "
-import subprocess, json, sys
-r = subprocess.run(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-                   capture_output=True, text=True)
-if r.returncode != 0:
-    sys.exit(1)
-print(json.loads(r.stdout.strip())['claudeAiOauth']['accessToken'], end='')
-")" || { echo "build_configs.sh: ERROR could not read any auth token from keychain" >&2; exit 2; }
-    AUTH_ENV="ANTHROPIC_AUTH_TOKEN=$TOKEN"
-    echo "build_configs.sh: auth: fallback live OAuth accessToken (short-lived, ~1h; mint os-evals-claude-token for long runs)"
 fi
 
 # --- snapshot ---
@@ -116,8 +97,8 @@ if [ "$HOME_ISOLATION" -eq 1 ]; then
 fi
 
 write_env() (  # $1 = layer dir, $2 = HOME dir for this layer; subshell so umask stays local
-    umask 077  # rung.env holds the auth token: never readable by others, not even briefly
-    printf 'CLAUDE_CONFIG_DIR=%s\n%s\n' "$1" "$AUTH_ENV" > "$1/rung.env"
+    umask 077  # rung.env holds no token (keychain only), but keep it private anyway
+    printf 'CLAUDE_CONFIG_DIR=%s\n' "$1" > "$1/rung.env"
     if [ "$HOME_ISOLATION" -eq 1 ]; then
         printf 'HOME=%s\n' "$2" >> "$1/rung.env"
         [ -f "$REAL_HOME/.gitconfig" ] && printf 'GIT_CONFIG_GLOBAL=%s\n' "$REAL_HOME/.gitconfig" >> "$1/rung.env"
@@ -128,9 +109,6 @@ write_env() (  # $1 = layer dir, $2 = HOME dir for this layer; subshell so umask
 # --- bare ---
 mkdir -p "$BASE/bare"
 write_env "$BASE/bare" "$BASE/home-bare"
-# --bare has been run with ANTHROPIC_AUTH_TOKEN before; whether it reads CLAUDE_CODE_OAUTH_TOKEN
-# is unconfirmed, so give bare both names.
-case "$AUTH_ENV" in CLAUDE_CODE_OAUTH_TOKEN=*) printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "$TOKEN" >> "$BASE/bare/rung.env";; esac
 printf '%s\n' '--bare' > "$BASE/bare/rung.flags"
 chmod 600 "$BASE/bare/rung.env"
 

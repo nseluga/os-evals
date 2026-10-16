@@ -58,6 +58,30 @@ REPO_ROOT = Path(__file__).parent.parent
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # the CLI's --effort set
 
 
+KEYCHAIN_ITEM = "os-evals-claude-token"
+_TOKEN = None  # read once per process by oauth_token(); run_one injects it into the claude env
+
+
+def oauth_token() -> str:
+    """CLAUDE_CODE_OAUTH_TOKEN from the environment (non-Mac/CI override), else the keychain item.
+    Cached for the process. Raises RuntimeError (no token in the message) if neither has one."""
+    global _TOKEN
+    if _TOKEN is None:
+        tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        if not tok:
+            try:
+                r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"],
+                                   capture_output=True, text=True)
+                tok = r.stdout.strip() if r.returncode == 0 else ""
+            except OSError:
+                tok = ""
+        if not tok:
+            raise RuntimeError(f"no auth token: keychain item {KEYCHAIN_ITEM!r} missing and CLAUDE_CODE_OAUTH_TOKEN unset; "
+                               f"fix: security add-generic-password -a os-evals -s {KEYCHAIN_ITEM} -w <token>")
+        _TOKEN = tok
+    return _TOKEN
+
+
 def find_tasks(tasks_dir: Path, include_non_default: bool = True) -> list[str]:
     """Task ids are paths (relative to tasks_dir) of any dir holding a prompt.md.
 
@@ -279,8 +303,8 @@ _AUTH_ERR_PATTERNS = (
 def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
     """Detect an auth/OAuth-expiry failure so it can be flagged infra (not a task fail).
 
-    A single multi-turn run can approach the ~1hr OAuth token lifetime baked into
-    rung.env; if the token expires mid-run the failure is infra, not evidence about
+    The token read from the keychain/env at start is a long-lived setup-token, so a mid-run
+    401 means it was revoked or rotated; that failure is infra, not evidence about
     the skill. score.py maps this to the check_rc==2 (unscoreable) convention.
     """
     t = transcript if isinstance(transcript, dict) else {}
@@ -384,6 +408,8 @@ def rung_dir(configs_dir: Path, layer, os_sha: str = "") -> Path:
 
 RUN_CONFIG_FILES = ("CLAUDE.md", "settings.json")
 RUN_CONFIG_LINKS = ("skills", "agents", "output-styles")
+# configs/<sha>/ built before item 1.8 still carry these; the token now comes only from keychain/env.
+STALE_TOKEN_LINES = ("CLAUDE_CODE_OAUTH_TOKEN=", "ANTHROPIC_AUTH_TOKEN=")
 
 
 def build_run_config(template: Path, cfg: Path) -> None:
@@ -393,8 +419,8 @@ def build_run_config(template: Path, cfg: Path) -> None:
     symlinks recreated with the same targets. Everything else Claude Code writes into a
     config dir (projects/*.jsonl transcripts, sessions/, backups/, .claude.json, ...) and
     rung.flags stay behind, so no run sees another run's answers. rung.env is rewritten with
-    CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for the auth
-    token (Claude Code doesn't pass it to hooks), and its nested session must stay per-run."""
+    CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for HOME/config
+    dir (the token comes from the keychain, never this file), and its nested session must stay per-run."""
     import shutil
     shutil.rmtree(cfg, ignore_errors=True)
     cfg.mkdir(parents=True)
@@ -407,7 +433,7 @@ def build_run_config(template: Path, cfg: Path) -> None:
             os.symlink(os.path.join(template, target), cfg / name)  # join is a no-op for an absolute target
     env_file = template / "rung.env"
     if env_file.is_file():
-        lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith("CLAUDE_CONFIG_DIR=")]
+        lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith(("CLAUDE_CONFIG_DIR=", *STALE_TOKEN_LINES))]
         fd = os.open(cfg / "rung.env", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write("\n".join([f"CLAUDE_CONFIG_DIR={cfg}", *lines]) + "\n")
@@ -425,7 +451,7 @@ def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             line = line.strip()
-            if line and "=" in line:
+            if line and "=" in line and not line.startswith(STALE_TOKEN_LINES):
                 k, _, v = line.partition("=")
                 env_vars[k.strip()] = v.strip()
 
@@ -437,6 +463,19 @@ def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str
                 flags.extend(line.split())
 
     return env_vars, flags
+
+
+def is_pre18_snapshot(template: Path) -> bool:
+    """True if the layer's settings.json wires the memory hook but not the keychain token re-read.
+
+    Pre-1.8 snapshots' hook wrapper takes the token from rung.env, which is filtered now, so the hook's
+    nested `claude -p` is "Not logged in" and silently injects nothing. Keyed on settings.json, not on
+    token lines, so it still holds after the rung.env cleanup."""
+    try:
+        s = (template / "settings.json").read_text()
+    except OSError:
+        return False
+    return "memory-relevance-hook" in s and KEYCHAIN_ITEM not in s
 
 
 def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
@@ -491,6 +530,10 @@ def run_one(
 
     # Only the claude subprocess gets the scrubbed env (setup.sh/restore keep the real one).
     env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
+    if _TOKEN:  # set by main(); bare also gets ANTHROPIC_AUTH_TOKEN (unconfirmed whether --bare reads the OAuth name)
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = _TOKEN
+        if layer == "bare":
+            env["ANTHROPIC_AUTH_TOKEN"] = _TOKEN
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}_{effort}"
@@ -797,6 +840,16 @@ def main() -> int:
     cells = plan_cells(layers, shas)
     models = args.models.split(",")
 
+    for layer, sha, _label in cells:
+        rdir = rung_dir(configs_dir, layer, sha)
+        if is_pre18_snapshot(rdir):
+            msg = (f"pre-1.8 snapshot {rdir}: its hook wrapper reads the token from rung.env; "
+                   "rebuild - rerun without --no-build")
+            if not args.dry_run:
+                print(f"run_matrix: ERROR {msg}", file=sys.stderr)
+                return 2
+            print(f"run_matrix: WARNING {msg} (a real run would refuse)")
+
     tasks = [t for t in tasks if t]
 
     print(f"run_matrix: tasks={tasks} cells={[c[2] for c in cells]} models={models}")
@@ -847,6 +900,12 @@ def main() -> int:
             print(f"  no history (median of others used): {', '.join(est['no_history'])}")
         print(f"jobs: {jobs}  workspaces: {os.path.abspath(ws_root)}")
         return 0
+
+    try:
+        oauth_token()  # fail fast, before any workspace is made; --dry-run above never needs it
+    except RuntimeError as e:
+        print(f"run_matrix: ERROR {e}", file=sys.stderr)
+        return 2
 
     ws_root.mkdir(parents=True, exist_ok=True)
 

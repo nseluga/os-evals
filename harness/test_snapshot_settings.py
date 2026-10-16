@@ -2,6 +2,8 @@
 
 Run: python3 harness/test_snapshot_settings.py
 """
+import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,9 @@ def test_strip():
     cmd = out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     check("hook path rewritten + env-wrapped", cmd,
           "bash -c 'set -a; . \"$CLAUDE_CONFIG_DIR/rung.env\"; set +a; "
+          "t=$(security find-generic-password -s os-evals-claude-token -w "
+          f"\"{pwd.getpwuid(os.getuid()).pw_dir}/Library/Keychains/login.keychain-db\" 2>/dev/null); "
+          "[ -n \"$t\" ] && export CLAUDE_CODE_OAUTH_TOKEN=\"$t\"; "
           f"exec python3 {SNAP}/scripts/memory-relevance-hook.py'")
     check("timeout kept", out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"], 15)
     check("memory dir rewritten", out["autoMemoryDirectory"], f"{SNAP}/knowledge/memory")
@@ -157,6 +162,7 @@ def test_layer_env():
                 if want_home:
                     want = base / ("home-bare" if layer == "bare" else "home")
                     check(f"HOME value [{layer}]", home[0], f"HOME={want}")
+                check(f"no token on disk [{layer}]", ("TOKEN" in envtxt, "fake-token" in envtxt), (False, False))
                 oct_ = oct((base / layer / "rung.env").stat().st_mode & 0o777)
                 check(f"rung.env mode [{layer}]", oct_, "0o600")
             check("bare flags", (base / "bare" / "rung.flags").read_text().strip(), "--bare")
