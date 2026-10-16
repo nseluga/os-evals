@@ -1,10 +1,12 @@
 category: coding
+gate: capability
+default: false  # excluded from the default task set; run with --tasks
 contaminated: true
 group: knowledge-informed
 curated_skill: baseball-research
-repeat: 3
+repeat: 1  # was 3; cost control 2026-09-28 (PLAN batch 4 item 10)
 multi_turn: true
-timeout_sec: 900
+timeout_sec: 1800
 source: git-derived (PIR session history is thin — only 1 retained session). Task reconstructs
         the real commit cf84a6b "notebook 5 draft" which introduced acwr_7_28 in
         src/features/workload_features.py. NOT sourced from a session prompt — flagged.

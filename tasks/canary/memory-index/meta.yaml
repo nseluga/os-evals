@@ -1,0 +1,19 @@
+category: canary
+gate: canary
+contaminated: false
+group: canary
+curated_skill: none (proves the memory-index layer loads)
+source: authored as a config-layer canary
+layer_expected: memory-index
+source_file: knowledge/memory/MEMORY.md
+tools: none
+repeat: 1
+description: |
+  Canary for the memory index layer (MEMORY.md, auto-loaded every session). The string `bcns-leads` is in the
+  index line for reference-cloud-scheduler-github-dispatch.md and not in CLAUDE.md. Caveat: it is also in that
+  memory file's body, so in a config where the memory-relevance hook also fires and inlines the file, this canary
+  cannot tell index-load from hook-load. The prompt asks about the index only and forbids reading files.
+
+  Expected bare answer: no idea, or an invented project name; bcns-leads is not guessable.
+
+STATUS: approved by Nate 2026-09-28; two-sided validated

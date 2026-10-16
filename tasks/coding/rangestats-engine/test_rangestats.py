@@ -123,10 +123,12 @@ ok(f"performance: {BIG_OPS} interleaved ops under {PERF_BUDGET}s "
 
 # ------------------------------------------------------------ 3. scalability (ratio, alarm-guarded)
 small_elapsed = big_elapsed = None
-signal.setitimer(signal.ITIMER_REAL, PERF_BUDGET * 2)
+# best of 3 per size: a single timing turned machine load into a false FAIL
+# (2026-09-28: a correct solution measured ratio 9.3 under load)
+signal.setitimer(signal.ITIMER_REAL, PERF_BUDGET * 2 * 3)
 try:
-    small_elapsed = run_workload(50_000, seed=7)
-    big_elapsed = run_workload(200_000, seed=7)
+    small_elapsed = min(run_workload(50_000, seed=7) for _ in range(3))
+    big_elapsed = min(run_workload(200_000, seed=7) for _ in range(3))
     signal.setitimer(signal.ITIMER_REAL, 0)
 except _Timeout:
     signal.setitimer(signal.ITIMER_REAL, 0)

@@ -1,0 +1,3 @@
+{
+ "result": "The index entry says the Cloud Scheduler job lives in the `bcns-leads` GCP project. Cloud Scheduler POSTs the workflow_dispatch to GitHub there, so the bcns-internal clock ticks don't depend on GitHub's own schedule cron, which was dropping ticks. It is the project named in the reference entry about cron ticks being dropped, and the reason for using it is that GitHub's own scheduled workflows can silently skip runs while a Cloud Scheduler call is dependable. That is why the dispatch runs from there instead of relying on the repository's own cron."
+}

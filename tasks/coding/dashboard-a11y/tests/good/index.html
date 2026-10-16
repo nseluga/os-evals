@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Project Dashboard</title></head>
+<body>
+  <header class="topbar">
+    <img src="/logo.png" class="logo" alt="Project Dashboard logo" />
+    <form class="search" action="/search">
+      <input type="text" name="q" class="search-input" aria-label="Search projects" />
+    </form>
+    <button class="icon-refresh" onclick="refresh()" aria-label="Refresh">
+      <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 3v10" /></svg>
+    </button>
+    <button class="btn-delete" onclick="deleteProject()">Delete</button>
+  </header>
+</body>
+</html>

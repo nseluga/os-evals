@@ -1,0 +1,1 @@
+{"result": "Critical findings must block the merge and require another QA pass. Important findings also block exit and require re-QA, just like critical ones. Minor findings are applied once by dt-fix without looping back for another review."}

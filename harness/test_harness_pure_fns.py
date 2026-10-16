@@ -123,7 +123,7 @@ def test_parse_stream_no_result_event():
 def test_looks_like_auth_error_authentication_keyword():
     # _AUTH_ERR_PATTERNS contains "authentication_error" (lowercase, underscore)
     result = looks_like_auth_error(
-        "", "", {"result": "authentication_error: token rejected"}
+        "", "", {"is_error": True, "result": "authentication_error: token rejected"}
     )
     check("looks_like_auth_error: 'authentication_error' pattern → True", result, True)
 
@@ -139,7 +139,7 @@ def test_looks_like_auth_error_401():
 def test_looks_like_auth_error_unauthorized():
     # "unauthorized" is in _AUTH_ERR_PATTERNS; "403" is not
     result = looks_like_auth_error(
-        "", "", {"result": "unauthorized: token has expired"}
+        "", "", {"is_error": True, "result": "unauthorized: token has expired"}
     )
     check("looks_like_auth_error: 'unauthorized' in transcript → True", result, True)
 
@@ -165,7 +165,7 @@ def test_looks_like_auth_error_file_not_found():
 def test_looks_like_rate_limit_iter4_429_string():
     # The exact result string from iteration 4's 429 transcripts.
     result = looks_like_rate_limit(
-        "", "", {"result": "API Error: Request rejected (429) · This request would exceed your account's rate limit."}
+        "", "", {"is_error": True, "result": "API Error: Request rejected (429) · This request would exceed your account's rate limit."}
     )
     check("looks_like_rate_limit: iter4 429 string in result → True", result, True)
 
@@ -177,7 +177,7 @@ def test_looks_like_rate_limit_429_in_stdout():
 
 
 def test_looks_like_rate_limit_exceed_account():
-    result = looks_like_rate_limit("", "", {"result": "would exceed your account quota"})
+    result = looks_like_rate_limit("", "", {"is_error": True, "result": "would exceed your account quota"})
     check("looks_like_rate_limit: 'exceed your account' in result → True", result, True)
 
 
@@ -189,9 +189,9 @@ def test_looks_like_rate_limit_plain_task_result():
 
 def test_looks_like_auth_error_still_routes_correctly():
     # Regression: an auth string must still trip looks_like_auth_error, not only rate_limit.
-    auth_result = looks_like_auth_error("", "", {"result": "authentication_error: invalid key"})
+    auth_result = looks_like_auth_error("", "", {"is_error": True, "result": "authentication_error: invalid key"})
     check("regression: auth string → looks_like_auth_error True", auth_result, True)
-    rate_result = looks_like_rate_limit("", "", {"result": "authentication_error: invalid key"})
+    rate_result = looks_like_rate_limit("", "", {"is_error": True, "result": "authentication_error: invalid key"})
     check("regression: auth string → looks_like_rate_limit False", rate_result, False)
 
 

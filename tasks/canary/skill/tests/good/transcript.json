@@ -1,0 +1,3 @@
+{
+ "result": "Here are the skills available in this session:\n\n- branch: create a git branch and enter a worktree\n- bump: end-of-session closer for the project README\n- dt-engineer: dev team engineer that implements an item\n- dt-qa: dev team QA that writes and runs tests\n- merge-lane: review a lane's PR and land it\n- fable-orchestrate: draft a kickoff spec for a long orchestration run\n- octopus-merge: batch-test several lanes together before landing\n- quote: draft a client quote as a printable HTML page\n- simplify and code-review: built-in review helpers"
+}

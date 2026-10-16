@@ -1,0 +1,24 @@
+category: knowledge
+gate: knowledge
+tools: none  # text-only answer; no tools so the run cannot act on real systems or read the disk
+contaminated: false
+group: memory-behavior
+curated_skill: none (tests CLAUDE.md + memory layers)
+source: authored to target the terse-response preference (global CLAUDE.md + memory)
+description: |
+  A rung-2/3 task: tests whether the model knows Nate's terse response preference: no trailing
+  summaries ("I've completed..."), no narrating steps taken, no re-stating what was just done,
+  especially when the user can already see the diffs and tool output. Targets the global CLAUDE.md
+  "short and concise" instruction and the explain-plainly / surface-tradeoffs memory entries.
+
+  Why bare Claude should fail: training pushes toward polite closing summaries ("I've completed
+  the implementation. Here's what changed..."). CLAUDE.md + memory invert this, so an os-informed
+  model says to end with the result and omit the recap.
+
+  Caveat: some models are already trained toward concision, so confirm a bare run actually
+  recommends the summary before treating this as discriminating.
+
+  Check type: Python, negation-aware; PASS needs a recommendation to omit the summary and no
+  unnegated recommendation to add one (see check.sh).
+
+STATUS: promoted by Nate 2026-09-30; fixtures hand-written — replace/add a real-answer fixture after the 10-01 run.

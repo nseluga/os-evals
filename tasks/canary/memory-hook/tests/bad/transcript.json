@@ -1,0 +1,3 @@
+{
+ "result": "I don't know the project ref for your Supabase project, and I can't look it up without tools. You can find it in the Supabase dashboard under Project Settings, General, where it is shown as the Reference ID, or by running `supabase projects list` and reading the linked project's ref column.\n\nOnce you have it, the command would be `supabase functions deploy invite-member mint-agent-login --project-ref <your-ref>`. If you paste the output of that command here I can help you pick the right project and double check the flags before you deploy anything."
+}

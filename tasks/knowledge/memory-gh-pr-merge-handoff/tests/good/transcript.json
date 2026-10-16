@@ -1,0 +1,3 @@
+{
+ "result": "I can't merge this one for you: in auto mode the permission classifier blocks `gh pr merge` as merging without review, and it tends to block a follow-up `gh pr view` too, so I won't try to work around it. Run it yourself from the prompt with the bang prefix:\n\n! GITHUB_TOKEN= gh pr merge 22 --repo bcn-services/bcns --squash --delete-branch\n\nThe empty `GITHUB_TOKEN=` makes gh use its own stored login instead of the environment token, which otherwise returns a misleading 404 for this repo. Tell me when it's done and I'll verify the deploy went out."
+}

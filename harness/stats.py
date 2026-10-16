@@ -19,8 +19,41 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-RUNG_PAIRS = [(1, 2), (2, 3), (3, 4), (1, 4)]
-ACTION_THRESHOLD = 7  # wins <= this two runs in a row -> prune candidate
+RUNG_PAIRS = [(1, 2), (2, 3), (3, 4), (1, 4)]   # legacy int rungs (pre-layers runs)
+LADDER = ["bare", "claude-md", "memory", "skills", "full"]
+
+
+def _rl(r) -> str:
+    """Rung label: legacy int rungs render as rung<N>; layer names render as-is."""
+    return f"rung{r}" if isinstance(r, int) else str(r)
+
+
+def _rung_key(r):
+    """Sort key: legacy ints first, then layers in ladder order, then anything else by name."""
+    if isinstance(r, int):
+        return (0, r, "")
+    base = str(r).split("@")[0]
+    return (1, LADDER.index(base) if base in LADDER else len(LADDER), str(r))
+
+
+def select_pairs(rungs, order=None) -> list[tuple]:
+    """Which (lo, hi) rung pairs to compare.
+
+    Legacy int rungs keep RUNG_PAIRS. Layer names: A/B (`full@A`, `full@B`) pairs the two
+    shas in the order given. Otherwise adjacent entries of the ORDER THE USER PASSED are
+    paired, wherever they sit in the full ladder (`bare,skills` -> [(bare, skills)]); with
+    no order, ladder order is used. Fewer than two layers -> []."""
+    present = set(rungs)
+    if present and all(isinstance(r, int) for r in present):
+        return [(lo, hi) for lo, hi in RUNG_PAIRS if lo in present and hi in present]
+    given = list(dict.fromkeys(r for r in (order or []) if r in present))
+    ab = [r for r in given if "@" in str(r)]
+    if len(ab) < 2:
+        ab = sorted((r for r in present if "@" in str(r)), key=_rung_key)
+    if len(ab) >= 2:
+        return [(ab[0], ab[1])]
+    ordered = given if order else sorted(present, key=_rung_key)
+    return list(zip(ordered, ordered[1:]))
 
 
 def sign_test(a_wins: int, b_wins: int, ties: int) -> str:
@@ -39,6 +72,10 @@ def _is_repeat_individual(s: dict) -> bool:
     return bool(s.get("is_repeat_individual", False))
 
 
+def _is_infra(s: dict) -> bool:
+    return bool(s.get("infra_error", False))
+
+
 def _effective_scores(scores: list[dict]) -> list[dict]:
     """Return scores with individual repeat records replaced by their majority records.
 
@@ -48,30 +85,41 @@ def _effective_scores(scores: list[dict]) -> list[dict]:
     return [s for s in scores if not _is_repeat_individual(s)]
 
 
-def compute_stats(scores: list[dict]) -> dict:
+def compute_stats(scores: list[dict], order=None) -> dict:
     """Group scores by task+rung, compute per-rung-pair sign tests.
 
     Sentinel tasks are excluded — they only run at rung1 and serve as difficulty
     anchors, not as evidence about layer transitions."""
     scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
 
+    # infra_error runs are excluded from `by_task_rung` (so they can never win/lose a
+    # pairwise comparison) but tracked separately so a comparison touching one is
+    # labeled "infra (excluded)" rather than the ambiguous "missing".
     by_task_rung: dict[tuple, dict] = {}
+    infra_trm: set[tuple] = set()
     for s in scored:
         key = (s["task"], s["rung"], s.get("model", ""))
-        by_task_rung[key] = s
+        if _is_infra(s):
+            infra_trm.add(key)
+        else:
+            by_task_rung[key] = s
 
     tasks = sorted({s["task"] for s in scored})
     models = sorted({s.get("model", "") for s in scored})
+    pairs = select_pairs({s["rung"] for s in scored}, order)
 
     results = {}
     for model in models:
         pair_results = {}
-        for lo, hi in RUNG_PAIRS:
+        for lo, hi in pairs:
             wins_hi = 0
             wins_lo = 0
             ties = 0
             task_verdicts = []
             for task in tasks:
+                if (task, lo, model) in infra_trm or (task, hi, model) in infra_trm:
+                    task_verdicts.append({"task": task, "verdict": "infra (excluded)"})
+                    continue
                 lo_score = by_task_rung.get((task, lo, model))
                 hi_score = by_task_rung.get((task, hi, model))
                 if lo_score is None or hi_score is None:
@@ -79,21 +127,21 @@ def compute_stats(scores: list[dict]) -> dict:
                     continue
                 if hi_score["passed"] and not lo_score["passed"]:
                     wins_hi += 1
-                    verdict = f"rung{hi} wins"
+                    verdict = f"{_rl(hi)} wins"
                 elif lo_score["passed"] and not hi_score["passed"]:
                     wins_lo += 1
-                    verdict = f"rung{lo} wins"
+                    verdict = f"{_rl(lo)} wins"
                 else:
                     ties += 1
                     verdict = "tie"
                 task_verdicts.append({"task": task, "verdict": verdict})
 
-            pair_results[f"rung{lo}_vs_rung{hi}"] = {
+            pair_results[f"{_rl(lo)}_vs_{_rl(hi)}"] = {
                 "higher_wins": wins_hi,
                 "lower_wins": wins_lo,
                 "ties": ties,
                 "sign_test": sign_test(wins_lo, wins_hi, ties),
-                "action_flag": wins_hi <= ACTION_THRESHOLD if (wins_hi + wins_lo) >= 3 else False,
+                "action_flag": (wins_hi + wins_lo) >= 3 and wins_hi <= wins_lo,
                 "task_verdicts": task_verdicts,
             }
         results[model] = pair_results
@@ -102,21 +150,21 @@ def compute_stats(scores: list[dict]) -> dict:
 
 
 def token_summary(scores: list[dict]) -> dict:
-    """Average tokens + cost by rung. Excludes sentinel tasks and individual repeat records."""
-    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
+    """Average tokens + cost by rung. Excludes sentinel tasks, individual repeat records and infra rows."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_infra(s)]
     tok_by_rung: dict[int, list] = defaultdict(list)
     cost_by_rung: dict[int, list] = defaultdict(list)
     for s in scored:
-        tok_by_rung[s["rung"]].append(s.get("total_tokens", 0))
+        tok_by_rung[s["rung"]].append(s.get("total_tokens") or 0)
         cost_by_rung[s["rung"]].append(s.get("cost_usd", 0) or 0)
     return {
-        f"rung{r}": {
+        _rl(r): {
             "avg_tokens": round(sum(v) / len(v)) if v else 0,
             "avg_cost": (sum(cost_by_rung[r]) / len(cost_by_rung[r])) if cost_by_rung[r] else 0,
             "total_cost": sum(cost_by_rung[r]),
             "n": len(v),
         }
-        for r, v in sorted(tok_by_rung.items())
+        for r, v in sorted(tok_by_rung.items(), key=lambda kv: _rung_key(kv[0]))
     }
 
 
@@ -125,15 +173,31 @@ LAYER_NAMES = {
     (2, 3): "memory (behavior instructions)",
     (3, 4): "curated skills",
     (1, 4): "full setup vs. bare",
+    ("bare", "full"): "full setup vs. bare",
+    ("bare", "claude-md"): "CLAUDE.md / knowledge routing",
+    ("claude-md", "memory"): "memory (behavior instructions)",
+    ("memory", "skills"): "skills + agents",
+    ("skills", "full"): "output style + full settings",
 }
 
 
 def _pass_map(scores: list[dict], model: str) -> dict[tuple, bool]:
-    """(task, rung) -> passed, for one model. Excludes individual repeat records."""
+    """(task, rung) -> passed, for one model. Excludes individual repeat records and
+    infra_error runs (an infra run is not evidence either way, so it must never look
+    like a fail or feed a flip/prune/regressed verdict)."""
     return {
         (s["task"], s["rung"]): bool(s["passed"])
         for s in _effective_scores(scores)
-        if s.get("model", "") == model
+        if s.get("model", "") == model and not _is_infra(s)
+    }
+
+
+def _infra_map(scores: list[dict], model: str) -> set[tuple]:
+    """(task, rung) pairs where this model's run was infra_error, for one model."""
+    return {
+        (s["task"], s["rung"])
+        for s in _effective_scores(scores)
+        if s.get("model", "") == model and _is_infra(s)
     }
 
 
@@ -161,17 +225,23 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
     # Loud warning when the suite has zero discriminating signal.
     # A rung-pair discriminates if ANY task flips pass/fail between its two rungs.
     # If no pair discriminates across any model, the suite cannot attribute value to any layer.
-    _by_tr = {(s["task"], s["rung"], s.get("model", "")): s["passed"] for s in scored}
+    _by_tr = {(s["task"], s["rung"], s.get("model", "")): s["passed"]
+              for s in scored if not _is_infra(s)}
     _all_tasks = sorted({s["task"] for s in scored})
     _all_models = sorted({s.get("model", "") for s in scored})
+    _pairs = select_pairs({s["rung"] for s in scored}, data.get("layer_order"))
     _has_any_flip = any(
         _by_tr.get((t, hi, m)) != _by_tr.get((t, lo, m))
         and (t, lo, m) in _by_tr and (t, hi, m) in _by_tr
         for m in _all_models
-        for lo, hi in RUNG_PAIRS
+        for lo, hi in _pairs
         for t in _all_tasks
     )
-    if not _has_any_flip and _all_tasks and _all_models:
+    if not _pairs:
+        lines.append("No rung pairs to compare: fewer than two layers with results, so no "
+                     "comparison or discrimination verdict was made.")
+        lines.append("")
+    elif not _has_any_flip and _all_tasks and _all_models:
         lines.append(
             "⚠️ SUITE HAS NO DISCRIMINATING SIGNAL — every task ties at every rung. "
             "Add tasks bare Claude fails but a scaffolded rung passes."
@@ -196,21 +266,28 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
 
     for model in models:
         pm = _pass_map(scored, model)
+        infra_map = _infra_map(scored, model)
         repeat_ann = _repeat_annotation_map(scores, model)
-        rungs = sorted({r for (_, r) in pm.keys()})
+        # Rungs come from all scored data (not just pm) so a rung that is 100% infra
+        # for this model still gets a row instead of silently vanishing.
+        rungs = sorted({s["rung"] for s in scored if s.get("model", "") == model}, key=_rung_key)
         lines += [f"### Model: {model}", ""]
 
-        # Per-rung pass rate
+        # Per-rung pass rate. Denominator counts only valid (non-infra) runs; infra
+        # runs are called out as a separate count so they're visible without inflating
+        # either the pass or fail side.
         lines += ["**Pass rate by rung:**", ""]
         for r in rungs:
             vals = [pm.get((t, r)) for t in tasks if (t, r) in pm]
             p = sum(1 for v in vals if v)
-            lines.append(f"- rung{r}: {p}/{len(vals)} passed")
+            infra_n = sum(1 for t in tasks if (t, r) in infra_map)
+            infra_note = f", {infra_n} infra" if infra_n else ""
+            lines.append(f"- {_rl(r)}: {p}/{len(vals)} passed{infra_note}")
         lines.append("")
 
         # Layer-transition wins (fail->pass minus pass->fail on the shared tasks)
         lines += ["**What each added layer bought (fail→pass flips on the next rung):**", ""]
-        for lo, hi in [(1, 2), (2, 3), (3, 4), (1, 4)]:
+        for lo, hi in _pairs:
             if lo not in rungs or hi not in rungs:
                 continue
             up = down = 0
@@ -224,10 +301,10 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
                 elif a and not b:
                     down += 1
             net = up - down
-            label = LAYER_NAMES.get((lo, hi), f"rung{lo}→rung{hi}")
+            label = LAYER_NAMES.get((lo, hi), f"{_rl(lo)}→{_rl(hi)}")
             detail = f" ({', '.join(flipped_tasks)})" if flipped_tasks else ""
             lines.append(
-                f"- **{label}** (rung{lo}→{hi}): +{up} / −{down} = net {net:+d}{detail}"
+                f"- **{label}** ({_rl(lo)}→{_rl(hi)}): +{up} / −{down} = net {net:+d}{detail}"
             )
         lines.append("")
 
@@ -267,11 +344,13 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
 
         # Per-task full rung matrix
         lines += ["**Per-task pass matrix:**", ""]
-        header = "| Task | Skill | " + " | ".join(f"r{r}" for r in rungs) + " |"
+        header = "| Task | Skill | " + " | ".join(f"r{r}" if isinstance(r, int) else str(r) for r in rungs) + " |"
         sep = "|------|-------|" + "|".join("---" for _ in rungs) + "|"
         lines += [header, sep]
         for t in tasks:
             def _cell(t: str, r: int) -> str:
+                if (t, r) in infra_map:
+                    return "infra"
                 if (t, r) not in pm:
                     return "·"
                 sym = "✓" if pm[(t, r)] else "✗"
@@ -297,7 +376,7 @@ def _cell_pass(scores: list[dict], model: str, rung: int) -> dict[str, bool]:
     return {
         s["task"]: bool(s["passed"])
         for s in scores
-        if s.get("model", "") == model and s["rung"] == rung
+        if s.get("model", "") == model and s["rung"] == rung and not _is_infra(s)
     }
 
 
@@ -311,6 +390,8 @@ def cross_model_section(scores: list[dict]) -> list[str]:
     scored = [s for s in scores if not _is_sentinel(s)]
     sonnet = _find_model(scored, "sonnet")
     opus = _find_model(scored, "opus")
+    layered = any(isinstance(s["rung"], str) for s in scored)
+    bare, full = ("bare", "full") if layered else (1, 4)
     lines: list[str] = ["## Cross-Model Comparison", ""]
     if not (sonnet and opus):
         lines += [
@@ -322,11 +403,11 @@ def cross_model_section(scores: list[dict]) -> list[str]:
 
     # Comparisons: (label, boosted/cheaper cell A, reference cell B, note)
     comparisons = [
-        ("Skill-boosted Sonnet (r4) vs bare Opus (r1)", (sonnet, 4), (opus, 1),
+        ("Skill-boosted Sonnet (r4) vs bare Opus (r1)", (sonnet, full), (opus, bare),
          "Does the full scaffolding let Sonnet reach where bare Opus lands?"),
-        ("Full-setup Sonnet (r4) vs full-setup Opus (r4)", (sonnet, 4), (opus, 4),
+        ("Full-setup Sonnet (r4) vs full-setup Opus (r4)", (sonnet, full), (opus, full),
          "With the same scaffolding, how much raw model headroom remains?"),
-        ("Bare Sonnet (r1) vs bare Opus (r1)", (sonnet, 1), (opus, 1),
+        ("Bare Sonnet (r1) vs bare Opus (r1)", (sonnet, bare), (opus, bare),
          "Baseline model gap with no scaffolding on either side."),
     ]
 
@@ -387,7 +468,7 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
         "They are excluded from pass/fail counts, sign-test, and cost tables above._"
     )
     lines.append("")
-    rung1_scores = [s for s in sentinel_scores if s["rung"] == 1]
+    rung1_scores = [s for s in sentinel_scores if s["rung"] in (1, "bare")]
     if not rung1_scores:
         lines.append("_no rung-1 data for this anchor_")
         lines.append("")
@@ -396,7 +477,7 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
     lines += ["| Task | Model | rung1 result | Tokens | Cost |",
               "|------|-------|-------------|--------|------|"]
     for s in sorted(rung1_scores, key=lambda x: (x["task"], x.get("model", ""))):
-        p = "✓" if s["passed"] else "✗"
+        p = "infra" if _is_infra(s) else ("✓" if s["passed"] else "✗")
         lines.append(
             f"| {s['task']} | {s.get('model', '—')} | {p} | "
             f"{s.get('total_tokens', 0):,} | ${s.get('cost_usd', 0):.4f} |"
@@ -405,15 +486,49 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
     return lines
 
 
-def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
+def render_markdown(data: dict, stats: dict, token_stats: dict,
+                    matrix_exit=None, planned=None) -> str:
     all_scores = data["scores"]
     scored = [s for s in _effective_scores(all_scores) if not _is_sentinel(s)]
 
     lines = ["# Eval Scorecard", ""]
+    present = len(data.get("scored_run_ids") or [])
+    short = planned is not None and present < planned
+    if (matrix_exit not in (None, 0)) or short:
+        of = f" of {planned} planned" if planned is not None else " (planned count unavailable)"
+        code = f"run_matrix exited with code {matrix_exit}; " if matrix_exit not in (None, 0) else ""
+        lines += [f"> ⚠️ **INCOMPLETE MATRIX**: {code}{present} runs present{of}. "
+                  f"Everything below covers only the runs that finished.", ""]
     os_sha = data.get("os_sha", "unknown")
     n_anchors = len([s for s in all_scores if _is_sentinel(s)])
     anchor_note = f" (+{n_anchors} anchors)" if n_anchors else ""
     lines += [f"os SHA: `{os_sha}`", f"runs: {len(scored)}{anchor_note}", ""]
+
+    run_ids = data.get("scored_run_ids") or []
+    if run_ids:
+        stamps = sorted(r.split("_")[0] for r in run_ids)
+        lines += [f"scored run ids: {len(run_ids)} ({stamps[0]} to {stamps[-1]})", ""]
+
+    by_reason: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for s in _effective_scores(all_scores):
+        if _is_infra(s):
+            by_reason[s.get("infra_reason") or "unspecified"][s["task"]] += 1
+    for reason, counts in sorted(by_reason.items(), key=lambda kv: (kv[0] == "contaminated", kv[0])):
+        detail = ", ".join(f"{t} ({n})" for t, n in sorted(counts.items()))
+        tail = f"({sum(counts.values())} runs across {len(counts)} tasks): {detail}"
+        if reason == "contaminated":
+            lines += [f"⚠️ contaminated runs (tool calls reached outside the workspace) excluded like infra {tail}", ""]
+        else:
+            lines += [f"⚠️ infra runs excluded [{reason}] from all comparisons and pass denominators {tail}", ""]
+
+    single = sorted(
+        f"{s['task']} @ {_rl(s['rung'])} [{s.get('model', '')}]"
+        for s in all_scores
+        if s.get("repeat_majority") and not _is_infra(s) and s.get("valid_repeats") == 1
+        and (s.get("repeat_total") or 0) > 1
+    )
+    if single:
+        lines += [f"⚠️ cells decided by a single valid repeat ({len(single)}): {', '.join(single)}", ""]
 
     lines += ["## Token & Cost Usage by Rung", ""]
     lines += ["| Rung | Avg tokens | Avg cost | Total cost | N runs |",
@@ -429,21 +544,25 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
     lines.append("")
 
     lines += ["## Pass/Fail by Rung", ""]
-    by_rung: dict[int, dict] = defaultdict(lambda: {"pass": 0, "fail": 0})
+    by_rung: dict[int, dict] = defaultdict(lambda: {"pass": 0, "fail": 0, "infra": 0})
     for s in scored:
-        if s["passed"]:
+        if _is_infra(s):
+            by_rung[s["rung"]]["infra"] += 1
+        elif s["passed"]:
             by_rung[s["rung"]]["pass"] += 1
         else:
             by_rung[s["rung"]]["fail"] += 1
-    lines += ["| Rung | Pass | Fail |", "|------|------|------|"]
-    for r, counts in sorted(by_rung.items()):
-        lines.append(f"| rung{r} | {counts['pass']} | {counts['fail']} |")
+    lines += ["| Rung | Pass | Fail | Infra |", "|------|------|------|-------|"]
+    for r, counts in sorted(by_rung.items(), key=lambda kv: _rung_key(kv[0])):
+        lines.append(f"| {_rl(r)} | {counts['pass']} | {counts['fail']} | {counts['infra']} |")
     lines.append("")
 
     lines += ["## Paired Sign-Test", ""]
     lines += [
-        f"Action threshold: ≤{ACTION_THRESHOLD} wins on ≥3 tasks = prune candidate", ""
+        "Action rule: ≥3 decisive tasks and the higher rung does not win a majority (higher wins ≤ lower wins) = prune candidate", ""
     ]
+    if not any(stats["rung_pairs"].values()):
+        lines += ["No rung pairs to compare: fewer than two layers with results.", ""]
     for model, pairs in stats["rung_pairs"].items():
         lines += [f"### Model: {model}", ""]
         for pair_name, pr in pairs.items():
@@ -463,9 +582,9 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
     lines += ["## Per-Run Results", ""]
     lines += ["| Task | Rung | Pass | Tokens | Cost |", "|------|------|------|--------|------|"]
     for s in scored:
-        p = "✓" if s["passed"] else "✗"
+        p = "infra" if _is_infra(s) else ("✓" if s["passed"] else "✗")
         lines.append(
-            f"| {s['task']} | rung{s['rung']} | {p} | {s.get('total_tokens', 0):,} | ${s.get('cost_usd', 0):.4f} |"
+            f"| {s['task']} | {_rl(s['rung'])} | {p} | {s.get('total_tokens', 0):,} | ${s.get('cost_usd', 0):.4f} |"
         )
     lines.append("")
 
@@ -477,12 +596,20 @@ def render_markdown(data: dict, stats: dict, token_stats: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scores-file", default="")
+    parser.add_argument("--matrix-exit", type=int, default=None, help="run_matrix.py exit code")
+    parser.add_argument("--planned-runs", type=int, default=None, help="runs run_matrix planned")
+    parser.add_argument("--layers", default="", help="layer/rung order for pairing (as given to run.sh)")
     args = parser.parse_args()
 
-    if args.scores_file:
-        data = json.loads(Path(args.scores_file).read_text())
-    else:
-        data = json.loads(sys.stdin.read())
+    raw = Path(args.scores_file).read_text() if args.scores_file else sys.stdin.read()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        print("stats.py: scores input is empty or not valid JSON", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print("stats.py: scores input is not a JSON object", file=sys.stderr)
+        return 1
 
     scores = data.get("scores", [])
     if not scores:
@@ -490,9 +617,11 @@ def main() -> int:
         return 1
 
     scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
-    stats = compute_stats(scored)
+    stats = compute_stats(scored, args.layers.split(",") if args.layers else None)
     token_stats = token_summary(scored)
-    md = render_markdown(data, stats, token_stats)
+    if args.layers:
+        data["layer_order"] = args.layers.split(",")
+    md = render_markdown(data, stats, token_stats, args.matrix_exit, args.planned_runs)
     print(md)
     return 0
 

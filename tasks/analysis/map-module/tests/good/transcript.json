@@ -1,0 +1,1 @@
+{"result": "The entry point is getMergedProjects. It calls two upstream stages: getProjects (raw project records) and readManual (manual overrides), then merges them, applying the override whitelist. A mutex guards concurrent reads of the manual file."}

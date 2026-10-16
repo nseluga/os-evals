@@ -1,0 +1,3 @@
+{
+ "result": "The health check in the bcns-os setup is `ls -L ~/.claude/skills/grill-me`. It should resolve, meaning the symlink from ~/.claude into the ~/os skills directory is intact and the skill file is reachable through it.\n\nIf that command errors with a broken link or no such file, the wiring between ~/os and ~/.claude has been moved or renamed, and the symlinks would need to be re-pointed. Nate's notes describe it as the quick way to know the whole config is still reachable from a fresh session, and it takes only a second to run whenever something seems to be missing."
+}

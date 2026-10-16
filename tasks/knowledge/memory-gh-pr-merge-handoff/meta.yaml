@@ -1,0 +1,25 @@
+category: knowledge
+gate: knowledge
+tools: none  # text-only answer; no tools so the run cannot act on real systems or read the disk
+contaminated: false
+group: knowledge-informed
+curated_skill: none (tests memory layer)
+source: authored to target knowledge/memory/reference-gh-pr-merge-blocked.md
+layer_expected: memory
+source_file: knowledge/memory/reference-gh-pr-merge-blocked.md
+description: |
+  A memory-layer task: tests whether the memory hook retrieves the gh pr merge handoff rule.
+
+  Rule (reference-gh-pr-merge-blocked.md): the auto-mode classifier denies `gh pr merge` as
+  "Merge Without Review". Don't work around it; give Nate the command to run himself:
+  `! GITHUB_TOKEN= gh pr merge <n> --repo bcn-services/bcns --squash --delete-branch`, then
+  verify the deploy.
+
+  The prompt asks to squash-merge an approved PR, matching the index line "`gh pr merge` or
+  squash-merging a PR".
+
+  Expected bare answer: either runs `gh pr merge 22 --squash --delete-branch` and reports it merged, or prints that plain command (no empty GITHUB_TOKEN= prefix, no handoff-to-Nate framing).
+
+  Check type: Python, negation-aware, requires a positive signal (see check.sh).
+
+STATUS: approved by Nate 2026-09-28; two-sided validated

@@ -1,208 +1,165 @@
 #!/bin/bash
 set -euo pipefail
 
-# harness/build_configs.sh
-# Assembles configs/rung{1..4}/ directories from ~/os.
+# harness/build_configs.sh [--os-sha <sha>]
+# Builds configs/<sha>/{bare,claude-md,memory,skills,full}/ from a git snapshot of ~/os
+# (default: ~/os HEAD), so the ~/os SHA under test is the code actually run, not a label.
 #
-# Isolation mechanism (discovered empirically):
-#   CLAUDE_CONFIG_DIR isolates config storage per run, but daemon-based OAuth auth
-#   is coupled to ~/.claude/daemon. Changing CLAUDE_CONFIG_DIR breaks auth.
-#   SOLUTION: ANTHROPIC_AUTH_TOKEN (OAuth accessToken from keychain) is honored
-#   directly and bypasses the daemon, so it works alongside a per-rung
-#   CLAUDE_CONFIG_DIR for BOTH bare (rungs 1-3) and non-bare (rung 4) runs.
+# Snapshot: `git -C ~/os archive <sha>` -> configs/<sha>/src/. Each non-bare layer is a
+# CLAUDE_CONFIG_DIR that symlinks/copies pieces of src/:
+#   bare       --bare, empty config dir, no context
+#   claude-md  CLAUDE.md + settings {autoMemoryEnabled:false}, no hooks
+#   memory     + autoMemoryDirectory -> src/knowledge/memory, UserPromptSubmit hook running
+#              src/scripts/memory-relevance-hook.py (resolves memory relative to its own file)
+#   skills     + skills/ and agents/
+#   full       + output-styles/ and the live-shaped settings (model, env, outputStyle...) with
+#              every hook except the memory hook stripped, ~/os paths rewritten to src/
+# Non-bare layers run with `--setting-sources user` so only the layer's own config loads.
+# HOME isolation (default on; --no-home-isolation to drop): the claude subprocess gets
+# HOME=configs/<sha>/home, where ~/os -> src/, so CLAUDE.md's `~/os/...` pointers read the
+# snapshot instead of live disk (bare gets an empty home-bare/). GIT_CONFIG_GLOBAL points at
+# the real ~/.gitconfig so git identity survives. Limit: an absolute /Users/<me>/os path
+# still reads live files. python3/node/npm/git/pnpm here are absolute-path binaries and need
+# no extra root vars (checked); PNPM_HOME is already absolute in the inherited env.
 #
-# Why rung 4 is NOT --bare (also discovered empirically):
-#   --bare drops the Skill tool entirely in headless `claude -p` (verified: the
-#   model reports no Skill tool and cannot invoke any skill). Since rung 4 exists
-#   to exercise skills, it must run NON-bare. Non-bare + CLAUDE_CONFIG_DIR +
-#   ANTHROPIC_AUTH_TOKEN authenticates fine and stays isolated: personal skills
-#   are read from $CLAUDE_CONFIG_DIR/skills, CLAUDE.md from $CLAUDE_CONFIG_DIR/CLAUDE.md,
-#   and auto-memory from settings.json's autoMemoryDirectory — none of it touches
-#   the real ~/.claude. That lets us curate rung 4's skill set to exactly the
-#   skills Nate actually reaches for (see CURATED_SKILLS below) instead of the
-#   whole ~38-skill catalog.
+# settings.json is NOT tracked in ~/os (it lives only at ~/.claude/settings.json), so the
+# `full` settings come from live $CLAUDE_DIR/settings.json and are constant across SHAs.
+# Personal overlay (gitignored files symlinked from ~/personal-os) is copied from live state
+# into src/ when present, also constant across SHAs. Plugins are stripped (known gap).
 #
-# Rung layout:
-#   rung1: bare claude, empty dir — no context
-#   rung2: bare + CLAUDE.md via --add-dir
-#   rung3: bare + CLAUDE.md + memory appended inline
-#   rung4: non-bare + isolated CLAUDE_CONFIG_DIR — CLAUDE.md + memory (auto-loaded)
-#          + ONLY the curated skill set (not the full catalog); token auth
-#
-# Each rung dir gets:
-#   rung.env    — shell env vars (CLAUDE_CONFIG_DIR, ANTHROPIC_AUTH_TOKEN)
-#   rung.flags  — extra claude flags (--bare --add-dir ...); empty for rung 4
+# Auth: prefers a long-lived token in keychain item `os-evals-claude-token`
+# (CLAUDE_CODE_OAUTH_TOKEN); falls back to the ~1h OAuth accessToken from
+# `Claude Code-credentials` (ANTHROPIC_AUTH_TOKEN). To mint and store the long-lived one
+# (Nate runs these; this script never does):
+#   claude setup-token
+#   security add-generic-password -U -s os-evals-claude-token -a "$USER" -w '<token>'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIGS_DIR="$REPO_ROOT/configs"
+CONFIGS_DIR="${CONFIGS_DIR:-$REPO_ROOT/configs}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+OS_DIR="${OS_DIR:-$HOME/os}"
+PERSONAL_DIR="${PERSONAL_DIR:-$HOME/personal-os}"
+REQ_SHA=""
+HOME_ISOLATION=1
+REAL_HOME="$HOME"
 
-echo "build_configs.sh: CLAUDE_DIR=$CLAUDE_DIR"
-
-# Extract OAuth access token from macOS keychain
-get_auth_token() {
-    python3 -c "
-import subprocess, json, sys
-result = subprocess.run(
-    ['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-    capture_output=True, text=True
-)
-if result.returncode != 0:
-    print('ERROR: could not read keychain', file=sys.stderr)
-    sys.exit(1)
-blob = json.loads(result.stdout.strip())
-token = blob['claudeAiOauth']['accessToken']
-print(token, end='')
-"
-}
-
-AUTH_TOKEN=$(get_auth_token)
-if [ -z "$AUTH_TOKEN" ]; then
-    echo "ERROR: could not extract auth token from keychain" >&2
-    exit 1
-fi
-echo "build_configs.sh: auth token extracted (length=${#AUTH_TOKEN})"
-
-# --- Rung 1: bare claude, no context ---
-RUNG1="$CONFIGS_DIR/rung1"
-mkdir -p "$RUNG1"
-cat > "$RUNG1/rung.env" << EOF
-CLAUDE_CONFIG_DIR=$RUNG1
-ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN
-EOF
-printf '%s\n' '--bare' > "$RUNG1/rung.flags"
-echo "build_configs.sh: rung1 done (bare, no context)"
-
-# --- Rung 2: CLAUDE.md + knowledge routing ---
-RUNG2="$CONFIGS_DIR/rung2"
-mkdir -p "$RUNG2"
-cp "$CLAUDE_DIR/CLAUDE.md" "$RUNG2/CLAUDE.md"
-cat > "$RUNG2/rung.env" << EOF
-CLAUDE_CONFIG_DIR=$RUNG2
-ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN
-EOF
-printf '%s\n' "--bare" "--add-dir $RUNG2" > "$RUNG2/rung.flags"
-echo "build_configs.sh: rung2 done (CLAUDE.md only)"
-
-# --- Rung 3: rung2 + memory (behavior instructions) ---
-RUNG3="$CONFIGS_DIR/rung3"
-mkdir -p "$RUNG3/memory"
-cp "$CLAUDE_DIR/CLAUDE.md" "$RUNG3/CLAUDE.md"
-
-# Copy individual memory files (not MEMORY.md index)
-if [ -d "$CLAUDE_DIR/memory" ]; then
-    for f in "$CLAUDE_DIR/memory/"*.md; do
-        [ -f "$f" ] || continue
-        fname="$(basename "$f")"
-        [ "$fname" = "MEMORY.md" ] && continue
-        cp "$f" "$RUNG3/memory/$fname"
-    done
-fi
-
-# Append memory content inline to CLAUDE.md (--bare skips auto-memory)
-if ls "$RUNG3/memory/"*.md 2>/dev/null | grep -q .; then
-    {
-        printf '\n\n---\n# Injected Memory (behavior instructions)\n\n'
-        for f in "$RUNG3/memory/"*.md; do
-            [ -f "$f" ] || continue
-            printf '## %s\n\n' "$(basename "$f")"
-            cat "$f"
-            printf '\n\n'
-        done
-    } >> "$RUNG3/CLAUDE.md"
-fi
-
-cat > "$RUNG3/rung.env" << EOF
-CLAUDE_CONFIG_DIR=$RUNG3
-ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN
-EOF
-printf '%s\n' "--bare" "--add-dir $RUNG3" > "$RUNG3/rung.flags"
-echo "build_configs.sh: rung3 done (CLAUDE.md + memory)"
-
-# --- Rung 4: everything (CLAUDE.md + memory + skills), but ONLY the curated skills ---
-# Isolated config dir, non-bare (so the Skill tool exists), token auth (so daemon
-# OAuth isn't needed). CLAUDE.md + memory are kept exactly as the full setup has
-# them; the ONLY narrowing vs. the real ~/.claude is the skill list.
-#
-# CURATED_SKILLS: rung 4 tests ONLY the dev-team orchestration skills. These are the
-# skills whose value is objective (ship hard, complex work quickly and with quality —
-# runtime, scalability, security), which is what this eval can actually measure. The
-# other curated skills were dropped because their value is subjective/quality-of-judgment
-# and pass/fail can't score it. Keep in sync with the task->skill map in SPEC.md.
-#
-# UNDER TEST (attribution): dev-team, dev-team-auto — the two orchestrators.
-# REQUIRED MACHINERY: dt-analyze/dt-engineer/dt-qa/dt-review/dt-fix/dt-ui — the
-#   specialists the orchestrators invoke as skills/agents (verified: both SKILL.md
-#   files reference them). They MUST be present or the orchestrator can't run and a
-#   failure would be wrongly attributed to it. They are not separately attributed.
-# DROPPED vs the old catalog: ai-usage-optimizer, baseball-research-advisor — their
-#   value is subjective judgment quality, which pass/fail can't score.
-CURATED_SKILLS=(
-    dev-team
-    dev-team-auto
-    dt-analyze
-    dt-engineer
-    dt-qa
-    dt-review
-    dt-fix
-    dt-ui
-)
-
-RUNG4="$CONFIGS_DIR/rung4"
-rm -rf "$RUNG4"                       # rebuild clean so a shrunk skill set can't leave stragglers
-mkdir -p "$RUNG4/memory" "$RUNG4/skills"
-
-# CLAUDE.md — same copy as rung2/rung3 (auto-discovered as $CLAUDE_CONFIG_DIR/CLAUDE.md)
-cp "$CLAUDE_DIR/CLAUDE.md" "$RUNG4/CLAUDE.md"
-
-# Memory — snapshot ALL files INCLUDING MEMORY.md (the index), so the real
-# auto-memory mechanism loads it (rung 3 inlines instead because --bare skips auto-memory).
-if [ -d "$CLAUDE_DIR/memory" ]; then
-    for f in "$CLAUDE_DIR/memory/"*.md; do
-        [ -f "$f" ] || continue
-        cp "$f" "$RUNG4/memory/$(basename "$f")"
-    done
-fi
-
-# settings.json — enable auto-memory pointed at THIS rung's snapshot (isolated, reproducible)
-cat > "$RUNG4/settings.json" << EOF
-{
-  "autoMemoryEnabled": true,
-  "autoMemoryDirectory": "$RUNG4/memory"
-}
-EOF
-
-# skills/ — symlink ONLY the curated set from $CLAUDE_DIR/skills
-missing=()
-for s in "${CURATED_SKILLS[@]}"; do
-    src="$CLAUDE_DIR/skills/$s"
-    if [ -d "$src" ]; then
-        ln -s "$src" "$RUNG4/skills/$s"
-    else
-        missing+=("$s")
-    fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --os-sha) REQ_SHA="$2"; shift 2;;
+        --no-home-isolation) HOME_ISOLATION=0; shift;;
+        *) echo "build_configs.sh: unknown arg: $1" >&2; exit 1;;
+    esac
 done
-if [ "${#missing[@]}" -gt 0 ]; then
-    echo "build_configs.sh: ERROR rung4 curated skills not found in $CLAUDE_DIR/skills: ${missing[*]}" >&2
-    exit 1
+
+SHA="$(git -C "$OS_DIR" rev-parse --short "${REQ_SHA:-HEAD}^{commit}" 2>/dev/null)" || {
+    echo "build_configs.sh: ERROR sha '${REQ_SHA:-HEAD}' is not in $OS_DIR history" >&2
+    exit 2
+}
+BASE="$CONFIGS_DIR/$SHA"
+SRC="$BASE/src"
+echo "build_configs.sh: os sha=$SHA -> $BASE"
+if [ "$SHA" = "$(git -C "$OS_DIR" rev-parse --short HEAD)" ]; then
+    n_dirty="$(git -C "$OS_DIR" status --porcelain | wc -l | tr -d ' ')"
+    [ "$n_dirty" -gt 0 ] && echo "build_configs.sh: WARNING snapshot is the committed state of HEAD; $n_dirty uncommitted files in $OS_DIR are not included"
 fi
 
-cat > "$RUNG4/rung.env" << EOF
-CLAUDE_CONFIG_DIR=$RUNG4
-ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN
-EOF
-: > "$RUNG4/rung.flags"   # empty: NON-bare (Skill tool must exist), no --add-dir needed
-
-# Verify: rung4/skills exposes EXACTLY the curated set and none of the other ~38.
-built_skills="$(cd "$RUNG4/skills" && ls -1 | sort)"
-want_skills="$(printf '%s\n' "${CURATED_SKILLS[@]}" | sort)"
-if [ "$built_skills" != "$want_skills" ]; then
-    echo "build_configs.sh: ERROR rung4 skill set mismatch." >&2
-    echo "  built: $(echo "$built_skills" | tr '\n' ' ')" >&2
-    echo "  want:  $(echo "$want_skills" | tr '\n' ' ')" >&2
-    exit 1
+# --- auth (value never printed) ---
+AUTH_ENV=""
+if TOKEN="$(security find-generic-password -s os-evals-claude-token -w 2>/dev/null)" && [ -n "$TOKEN" ]; then
+    TOKEN="$(printf '%s' "$TOKEN" | tr -d '\n')"
+    AUTH_ENV="CLAUDE_CODE_OAUTH_TOKEN=$TOKEN"
+    echo "build_configs.sh: auth: long-lived keychain item os-evals-claude-token"
+else
+    TOKEN="$(python3 -c "
+import subprocess, json, sys
+r = subprocess.run(['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+                   capture_output=True, text=True)
+if r.returncode != 0:
+    sys.exit(1)
+print(json.loads(r.stdout.strip())['claudeAiOauth']['accessToken'], end='')
+")" || { echo "build_configs.sh: ERROR could not read any auth token from keychain" >&2; exit 2; }
+    AUTH_ENV="ANTHROPIC_AUTH_TOKEN=$TOKEN"
+    echo "build_configs.sh: auth: fallback live OAuth accessToken (short-lived, ~1h; mint os-evals-claude-token for long runs)"
 fi
-echo "build_configs.sh: rung4 done (isolated, non-bare, token auth; ${#CURATED_SKILLS[@]} curated skills)"
 
-echo "build_configs.sh: all 4 rungs written to $CONFIGS_DIR"
+# --- snapshot ---
+# A previous build's src/ is read-only (chmod a-w below); restore write so rm can delete it.
+[ -e "$BASE" ] && chmod -R u+w "$BASE"
+rm -rf "$BASE"
+mkdir -p "$SRC"
+git -C "$OS_DIR" archive "$SHA" | tar -x -C "$SRC"
+[ -f "$SRC/CLAUDE.md" ] || { echo "build_configs.sh: ERROR no CLAUDE.md in snapshot $SHA" >&2; exit 2; }
+[ -f "$SRC/scripts/memory-relevance-hook.py" ] || echo "build_configs.sh: WARNING no memory hook at $SHA; memory/skills/full layers get no hook" >&2
+
+# --- personal overlay: gitignored symlinks into ~/personal-os, copied from live state ---
+n_personal=0
+for sub in skills agents knowledge/memory; do
+    [ -d "$OS_DIR/$sub" ] || continue
+    for p in "$OS_DIR/$sub"/*; do
+        [ -L "$p" ] || continue
+        case "$(readlink "$p")" in "$PERSONAL_DIR"/*) ;; *) continue;; esac
+        [ -e "$p" ] || continue
+        [ -e "$SRC/$sub/$(basename "$p")" ] && continue
+        mkdir -p "$SRC/$sub"
+        cp -RL "$p" "$SRC/$sub/"
+        n_personal=$((n_personal + 1))
+    done
+done
+echo "build_configs.sh: personal overlay: $n_personal live ~/personal-os entries (memory/skills/agents) copied into src/, held constant across SHAs"
+echo "build_configs.sh: known gap: enabledPlugins stripped (ponytail, impeccable, ui-ux-pro-max, claude-code-setup not loaded)"
+
+printf '%s\n' "$SHA" > "$SRC/.evals-snapshot-id"
+if [ "$HOME_ISOLATION" -eq 1 ]; then
+    mkdir -p "$BASE/home" "$BASE/home-bare"
+    ln -s "$SRC" "$BASE/home/os"
+fi
+
+write_env() (  # $1 = layer dir, $2 = HOME dir for this layer; subshell so umask stays local
+    umask 077  # rung.env holds the auth token: never readable by others, not even briefly
+    printf 'CLAUDE_CONFIG_DIR=%s\n%s\n' "$1" "$AUTH_ENV" > "$1/rung.env"
+    if [ "$HOME_ISOLATION" -eq 1 ]; then
+        printf 'HOME=%s\n' "$2" >> "$1/rung.env"
+        [ -f "$REAL_HOME/.gitconfig" ] && printf 'GIT_CONFIG_GLOBAL=%s\n' "$REAL_HOME/.gitconfig" >> "$1/rung.env"
+    fi
+    chmod 600 "$1/rung.env"
+)
+
+# --- bare ---
+mkdir -p "$BASE/bare"
+write_env "$BASE/bare" "$BASE/home-bare"
+# --bare has been run with ANTHROPIC_AUTH_TOKEN before; whether it reads CLAUDE_CODE_OAUTH_TOKEN
+# is unconfirmed, so give bare both names.
+case "$AUTH_ENV" in CLAUDE_CODE_OAUTH_TOKEN=*) printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "$TOKEN" >> "$BASE/bare/rung.env";; esac
+printf '%s\n' '--bare' > "$BASE/bare/rung.flags"
+chmod 600 "$BASE/bare/rung.env"
+
+# --- non-bare layers ---
+for layer in claude-md memory skills full; do
+    d="$BASE/$layer"
+    mkdir -p "$d"
+    cp "$SRC/CLAUDE.md" "$d/CLAUDE.md"
+    case "$layer" in skills|full)
+        ln -s "$SRC/skills" "$d/skills"
+        [ -d "$SRC/agents" ] && ln -s "$SRC/agents" "$d/agents";;
+    esac
+    if [ "$layer" = full ] && [ -d "$SRC/output-styles" ]; then ln -s "$SRC/output-styles" "$d/output-styles"; fi
+    LAYER="$layer" SNAP="$SRC" LIVE="$CLAUDE_DIR/settings.json" OUT="$d/settings.json" \
+        PYTHONPATH="$SCRIPT_DIR" python3 -c "
+import json, os
+from snapshot_settings import layer_settings
+live = json.load(open(os.environ['LIVE']))
+json.dump(layer_settings(os.environ['LAYER'], live, os.environ['SNAP']), open(os.environ['OUT'], 'w'), indent=2)
+"
+    write_env "$d" "$BASE/home"
+    printf '%s\n' '--setting-sources user' > "$d/rung.flags"
+done
+
+# Freeze the snapshot so one run cannot change what a later run sees. Layer dirs and home/
+# stay writable (Claude Code keeps session state there). memory-relevance-hook.py appends to
+# src/outputs/memory-hook-errors.log, so that one directory stays writable.
+mkdir -p "$SRC/outputs"
+chmod -R a-w "$SRC"
+chmod -R u+w "$SRC/outputs"
+
+echo "build_configs.sh: done -> $BASE/{bare,claude-md,memory,skills,full}"

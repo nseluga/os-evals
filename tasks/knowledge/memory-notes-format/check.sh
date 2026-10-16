@@ -53,7 +53,7 @@ if not has_onefile:
 # --- Check 2: must NOT positively recommend a combined/shared notes approach ---
 # Use context-aware check: look for "combined notes" WITHOUT a preceding negation
 COMBINED_PATTERN = re.compile(
-    r"(combined notes|shared notes|single notes file|one notes file|master notes|"
+    r"(combined notes|shared notes|single notes file|one notes file(?! per (?:document|doc|source|pdf|paper))|master notes|"
     r"aggregate.* notes|all.* notes.*file|notes\.md.*all|central notes|general notes)"
 )
 NEGATION_WORDS = ("never", "not", "don't", "avoid", "no ", "instead", "don't")

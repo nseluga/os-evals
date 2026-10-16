@@ -1,0 +1,1 @@
+I'm about to deploy the invite-member and mint-agent-login edge functions from ~/bcns with `supabase functions deploy`. What --project-ref do I pass? Answer from what is already in your context. Do not use any tools, and do not read any files.

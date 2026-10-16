@@ -9,7 +9,7 @@ group: clean
 # multi_turn: true           # capture the full stream-json event trace, give the run a real
 #                            # git repo (so dev-team-auto can branch/worktree), and detect
 #                            # skill activation. Default false = one-shot single-JSON path.
-# timeout_sec: 1800          # per-task wall-clock budget. Default 300. Multi-turn dev-team
+# timeout_sec: 1800          # per-task wall-clock budget. Default 1800. Multi-turn dev-team
 #                            # tasks need this well above 300 (they run many minutes).
 
 description: |

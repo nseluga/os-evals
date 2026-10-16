@@ -1,0 +1,1 @@
+{"result": "Critical: SQL injection, the query is built with % string formatting; use parameterized queries. Also a hardcoded API secret in source, and an O(n*m) nested loop in enrich_users; use a dict lookup."}

@@ -1,0 +1,1 @@
+{"result": "The random 80/20 split ignores that pitcher-seasons are time-ordered, causing temporal leakage; use a time-based split. Using same-season IL days as features is target leakage. Reporting 94% accuracy on a 6% positive class is misleading; use precision and recall."}

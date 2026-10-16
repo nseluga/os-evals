@@ -1,0 +1,3 @@
+{
+ "result": "Here is a warm, low-glare palette for a light theme. I kept the body text off pure black on purpose, since near-black text on a light page reads harsh and default.\n\n:root {\n  --bg: #faf8f4;\n  --ink: #3a3630;          /* body text, a soft dark charcoal */\n  --muted: #6f6a60;        /* secondary text */\n  --accent: #2f6f8f;\n}\n\nBody text at #3a3630 on #faf8f4 still has plenty of contrast for reading, and the muted tone at #6f6a60 is fine for captions and timestamps. If you add an SVG chart, make sure the text fill inherits the ink token rather than falling back to black."
+}

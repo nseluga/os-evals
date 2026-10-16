@@ -1,0 +1,3 @@
+{
+ "result": "That warning is a symptom of running from the wrong directory, not of a real migration mismatch. From the root of ~/bcns the Supabase CLI picks up the leftover top-level supabase/ folder instead of the actual project inside platform/, so nothing matches the remote history.\n\nSkip the suggested `migration repair` step entirely, since it rewrites the remote migration history and would flag applied migrations as reverted. Add the flag `--workdir platform` to your supabase command and the CLI will read the correct migrations directory. Rerun `supabase migration list --workdir platform` to confirm everything is in sync."
+}

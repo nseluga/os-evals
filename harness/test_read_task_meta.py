@@ -29,7 +29,7 @@ def test_real_tasks():
 
     pg = read_task_meta(REPO / "tasks/coding/pathguard-resolver")
     check("pathguard multi_turn", pg["multi_turn"], True)
-    check("pathguard timeout_sec", pg["timeout_sec"], 1200)
+    check("pathguard timeout_sec", pg["timeout_sec"], 1800)
     check("pathguard curated_skill", pg["curated_skill"], "dev-team")
 
 

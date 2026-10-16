@@ -1,0 +1,3 @@
+{
+ "result": "Yes, you should end with a short summary. It is good practice to wrap up with something like \"I've completed the implementation. Here's what changed: I added X, modified Y, and updated Z.\"\n\nA closing recap helps the user confirm that everything they asked for was done, and it gives them a quick overview without reading every diff. I recommend adding a one-paragraph summary at the end, listing each change you made."
+}

@@ -1,0 +1,1 @@
+{"result": "A hook is a command or script that runs automatically when a specific event happens in Claude Code, for example a shell command that runs after every file save. Auto-format-on-save is a fine use. One tradeoff: it can silently fail or produce a surprising diff if the formatter config differs, and it can slow every save slightly."}

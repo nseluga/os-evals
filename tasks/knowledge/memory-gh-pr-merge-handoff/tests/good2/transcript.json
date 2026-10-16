@@ -1,0 +1,3 @@
+{
+ "result": "This is one you have to do at your end. The classifier in auto mode treats an agent merging its own PR as skipping review, so it denies `gh pr merge`. Type this in your own terminal or as a `!` command in the session:\n\n`! GITHUB_TOKEN= gh pr merge 22 --repo bcn-services/bcns --squash --delete-branch`\n\nThat squashes the PR and removes the branch. The blank GITHUB_TOKEN assignment is intentional, it stops gh from using the wrong token. Once it lands, ping me and I'll check the production deploy and confirm the site is healthy."
+}

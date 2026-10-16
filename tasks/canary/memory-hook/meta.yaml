@@ -1,0 +1,21 @@
+category: canary
+gate: canary
+contaminated: false
+group: canary
+curated_skill: none (proves the memory layer loads)
+source: authored as a config-layer canary
+layer_expected: memory
+source_file: knowledge/memory/reference-supabase-cli-workdir-platform.md
+tools: none
+repeat: 1
+description: |
+  Canary for the memory-relevance hook (scripts/memory-relevance-hook.py). The hook asks Haiku to pick index
+  entries for the prompt, then inlines the whole picked file (frontmatter + body, up to 4000 chars) as
+  additionalContext. The project ref `cnsxbglhredokjbvudfd` appears only in the BODY of
+  reference-supabase-cli-workdir-platform.md: not in its MEMORY.md index line, not in CLAUDE.md. The prompt
+  (supabase functions deploy in ~/bcns) matches that index line, so a working hook inlines the file. Only then can the
+  model answer. Depends on Haiku picking the entry: a fail can also mean a hook miss (that is what it measures).
+
+  Expected bare answer: a request to look the ref up in the dashboard; the ref is not guessable.
+
+STATUS: approved by Nate 2026-09-28; two-sided validated

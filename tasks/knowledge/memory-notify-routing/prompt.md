@@ -1,0 +1,1 @@
+I'm adding two notification emails to the outreach pipeline in bcns-internal: one when a lead replies and wants a call, and one when a lead signs. The bot@bcn-services.com mailbox sends them. Who should each one go to, me (Nate) or Brandon?

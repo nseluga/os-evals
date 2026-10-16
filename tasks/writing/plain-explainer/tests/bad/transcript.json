@@ -1,0 +1,1 @@
+{"result": "Hooks are a powerful lifecycle primitive enabling declarative pre/post semantics via a structured settings schema across your development environment. Setting up auto-format-on-save is straightforward and highly recommended: just add a PostToolUse entry."}
