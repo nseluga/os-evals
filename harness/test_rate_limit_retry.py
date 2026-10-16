@@ -122,6 +122,7 @@ def test_per_run_config_dir():
     def fake_run(cmd, **kw):
         cfg = Path(kw["env"]["CLAUDE_CONFIG_DIR"])
         calls.append({"cwd": kw["cwd"], "cfg": str(cfg), "stale": (cfg / "projects").exists(),
+                      "env_vals": set(kw["env"].values()),
                       "files": sorted(p.name for p in cfg.iterdir())})
         if len(calls) == 1:  # what Claude Code writes into its config dir mid-run
             (cfg / "projects").mkdir()
@@ -142,7 +143,9 @@ def test_per_run_config_dir():
         (tpl / "projects" / "old-run.jsonl").write_text("another run's answer")
         (tpl / "CLAUDE.md").write_text("ctx")
         (tpl / "settings.json").write_text("{}")
-        (tpl / "rung.env").write_text(f"CLAUDE_CONFIG_DIR={tpl}\nHOME={d}/configs/sha1/home\n")
+        # pre-1.8 snapshots still carry token lines; they must reach neither cfg/rung.env nor the claude env
+        (tpl / "rung.env").write_text(f"CLAUDE_CONFIG_DIR={tpl}\nCLAUDE_CODE_OAUTH_TOKEN=STALE-OAUTH-FAKE\n"
+                                      f"HOME={d}/configs/sha1/home\nANTHROPIC_AUTH_TOKEN=STALE-AUTH-FAKE\n")
         (tpl / ".claude.json").write_text("{}")
         (d / "src-skills").mkdir()
         (tpl / "skills").symlink_to(d / "src-skills")
@@ -166,6 +169,10 @@ def test_per_run_config_dir():
         check("cfg/rung.env points the hook at cfg/", env_lines[0], f"CLAUDE_CONFIG_DIR={cfg}")
         check("cfg/rung.env keeps the rest, drops the template dir",
               env_lines[1:], [f"HOME={d}/configs/sha1/home"])
+        check("no stale token text in cfg/rung.env", "FAKE" in (cfg / "rung.env").read_text(), False)
+        check("load_rung drops stale token lines", run_matrix.load_rung(d / "configs", "full", "sha1")[0],
+              {"CLAUDE_CONFIG_DIR": str(tpl), "HOME": f"{d}/configs/sha1/home"})
+        check("stale tokens not in claude env", bool(calls[0]["env_vals"] & {"STALE-OAUTH-FAKE", "STALE-AUTH-FAKE"}), False)
         check("cfg/rung.env private", oct((cfg / "rung.env").stat().st_mode & 0o777), "0o600")
         check("CLAUDE.md copied", (cfg / "CLAUDE.md").read_text(), "ctx")
         check("skills symlink same target", os.readlink(cfg / "skills"), str(d / "src-skills"))

@@ -23,7 +23,7 @@ set -euo pipefail
 # run_matrix reads it once per run and injects CLAUDE_CODE_OAUTH_TOKEN into each claude process
 # (--dry-run needs no token). CLAUDE_CODE_OAUTH_TOKEN already in the environment overrides the
 # keychain read (non-Mac/CI path; the memory hook's nested session still reads the keychain only).
-# Missing both -> run_matrix exits 2 naming the `security add-generic-password` fix.
+# Missing both -> run.sh exits 2 before archiving, naming the `security add-generic-password` fix.
 #
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
 # a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
@@ -159,6 +159,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "run.sh: dry run only (nothing invoked, scored, or written to runs/)"
     exit 0
 fi
+
+# --- Token presence (no value read): refuse before the archive step moves anything ---
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || security find-generic-password -s os-evals-claude-token >/dev/null 2>&1 || {
+    echo "run.sh: ERROR no auth token: keychain item os-evals-claude-token missing and CLAUDE_CODE_OAUTH_TOKEN unset;" \
+         "fix: security add-generic-password -a os-evals -s os-evals-claude-token -w <token>" >&2
+    exit 2
+}
 
 # --- Preflight (free dry run): refuse before anything is moved or spent ---
 # Catches an unbuilt snapshot (--no-build after ~/os moved), unknown layers and draft tasks.

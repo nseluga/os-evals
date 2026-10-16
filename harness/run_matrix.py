@@ -303,8 +303,8 @@ _AUTH_ERR_PATTERNS = (
 def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
     """Detect an auth/OAuth-expiry failure so it can be flagged infra (not a task fail).
 
-    A single multi-turn run can approach the ~1hr OAuth token lifetime baked into
-    rung.env; if the token expires mid-run the failure is infra, not evidence about
+    A single multi-turn run can approach the ~1hr OAuth token lifetime of the token
+    read from the keychain/env at start; if the token expires mid-run the failure is infra, not evidence about
     the skill. score.py maps this to the check_rc==2 (unscoreable) convention.
     """
     t = transcript if isinstance(transcript, dict) else {}
@@ -408,6 +408,8 @@ def rung_dir(configs_dir: Path, layer, os_sha: str = "") -> Path:
 
 RUN_CONFIG_FILES = ("CLAUDE.md", "settings.json")
 RUN_CONFIG_LINKS = ("skills", "agents", "output-styles")
+# configs/<sha>/ built before item 1.8 still carry these; the token now comes only from keychain/env.
+STALE_TOKEN_LINES = ("CLAUDE_CODE_OAUTH_TOKEN=", "ANTHROPIC_AUTH_TOKEN=")
 
 
 def build_run_config(template: Path, cfg: Path) -> None:
@@ -431,7 +433,7 @@ def build_run_config(template: Path, cfg: Path) -> None:
             os.symlink(os.path.join(template, target), cfg / name)  # join is a no-op for an absolute target
     env_file = template / "rung.env"
     if env_file.is_file():
-        lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith("CLAUDE_CONFIG_DIR=")]
+        lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith(("CLAUDE_CONFIG_DIR=", *STALE_TOKEN_LINES))]
         fd = os.open(cfg / "rung.env", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write("\n".join([f"CLAUDE_CONFIG_DIR={cfg}", *lines]) + "\n")
@@ -449,7 +451,7 @@ def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str
     if env_file.exists():
         for line in env_file.read_text().splitlines():
             line = line.strip()
-            if line and "=" in line:
+            if line and "=" in line and not line.startswith(STALE_TOKEN_LINES):
                 k, _, v = line.partition("=")
                 env_vars[k.strip()] = v.strip()
 
