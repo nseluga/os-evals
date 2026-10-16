@@ -2,7 +2,10 @@
 
 Run: python3 harness/test_budget.py
 """
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -184,15 +187,138 @@ def test_resume():
         (d / f"{ts}t_bare_m_high_r1.json").write_text(json.dumps({"_meta": {"task": "t"}}))                  # valid
         (d / f"{ts}t_bare_m_high_r2.json").write_text(json.dumps({"_meta": {"rate_limited": True}}))         # exhausted: re-run
         stub = rm.write_skipped(its[2], d, "", 0.0, "stopped")                                              # stub: re-run
-        (d / f"{ts}u_full_claude_x_high.json").write_text("{not json")                                      # corrupt: re-run
+        (d / f"{ts}u_full_claude_x_high.json").write_text(json.dumps({"_meta": {"auth_error": True}}))     # auth failure: re-run
+        (d / f"{ts}v_bare_m_high.json").write_text("{not json")                                             # corrupt: skipped by the scan
         (d / f"{ts}t_bare_m_high_r1.trace.jsonl").write_text('{"type":"result"}')                            # not a transcript
-        valid, stubs = rm.scan_runs(d)
+        valid, stale = rm.scan_runs(d)
         check("valid stems", valid, {"t_bare_m_high_r1"})
-        check("stubs found", list(stubs), ["t_bare_m_high_r3"])
-        check("stub path", stubs["t_bare_m_high_r3"], stub)
+        check("stale (stub, rate_limited, auth_error) stems", sorted(stale),
+              ["t_bare_m_high_r2", "t_bare_m_high_r3", "u_full_claude_x_high"])
+        check("stub path", stale["t_bare_m_high_r3"], [stub])
         check("todo after resume", [rm.item_stem(x) for x in its if rm.item_stem(x) not in valid],
               ["t_bare_m_high_r2", "t_bare_m_high_r3", "u_full_claude_x_high"])
     check("missing runs dir", rm.scan_runs(Path("/nonexistent-runs-dir")), (set(), {}))
+
+
+def test_rounds_by_repeat_index():
+    """jobs>1: a round's multi-turn cells run before the next round's one-shot cells, and stop spans rounds."""
+    def it(task, i, multi):
+        x = item(task, "bare", "m", i=i, repeat=2)
+        x["multi_turn"] = multi
+        return x
+    items = [it("a", 1, False), it("b", 1, False), it("mt", 1, True), it("c", 2, False), it("d", 2, False), it("mt", 2, True)]
+    launched, lock = [], threading.Lock()
+
+    def runner(x):
+        with lock:
+            launched.append(x["label_id"])
+
+    rm.execute_items(items, runner, 2)
+    ids = [x["label_id"] for x in items]
+    check("r1 one-shots (any order), then r1 multi_turn, then r2 one-shots, then r2 multi_turn",
+          (sorted(launched[:2]), launched[2], sorted(launched[3:5]), launched[5]),
+          (sorted(ids[:2]), ids[2], sorted(ids[3:5]), ids[5]))
+    # the stop trips on the r1 multi_turn run: r2 cells (both kinds) are skipped, not launched
+    b, launched, skipped = rm.MatrixBudget(stop_after=1), [], []
+
+    def runner2(x):
+        with lock:
+            launched.append(x["label_id"])
+        if x["multi_turn"]:
+            b.record(0, True)
+
+    rm.execute_items(items, runner2, 2, stop=b.stop, on_skip=lambda x: skipped.append(x["label_id"]))
+    check("stop spans rounds: launched", (len(launched), launched[2]), (3, ids[2]))
+    check("stop spans rounds: skipped", sorted(skipped), sorted(ids[3:]))
+
+
+def test_model_family_keys():
+    check("family of full id and alias", [rm._model_family(m) for m in ("claude-sonnet-4-6", "opus", "claude-haiku-4-5", "m")],
+          ["sonnet", "opus", "haiku", "m"])
+    hist = [rec("a", "bare", "claude-sonnet-4-6", 2.0, passed=False), rec("a", "full", "claude-opus-4-8", 7.0),
+            rec("a", "bare", "claude-sonnet-4-6", 1.0, passed=False), rec("a", "full", "claude-sonnet-4-6", 1.0)]
+    est = rm.estimate_items(hist, [item("a", "bare", "sonnet"), item("a", "full", "opus")])
+    check("alias items hit full-id history", [(e["est"], e["source"]) for e in est], [(1.5, "measured"), (7.0, "measured")])
+    est = rm.estimate_items(hist + [rec("d", "bare", "claude-sonnet-4-6", 2.0)], [item("d", "bare", "opus")])
+    check("sonnet-ratio works on full ids", (est[0]["est"], est[0]["source"]), (2.0 * 7.0, "sonnet-ratio"))  # ratio = opus/sonnet on a/full = 7.0 / 1.0
+    disc = rm.discriminating_set(hist)
+    check("discriminating set keyed by family", disc, {("a", "sonnet")})
+    order = rm.order_items([item("a", "x", "opus"), item("a", "bare", "claude-sonnet-4-6")],
+                           [{"est": 1.0, "source": "measured"}, {"est": 9.0, "source": "measured"}], disc)
+    check("a full-id item matches the family-keyed disc entry (disc first despite higher cost)",
+          [it["model"] for it, _ in order], ["claude-sonnet-4-6", "opus"])
+
+
+def test_latest_scores():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        # mtime order is the reverse of the stamp order, and the aggregates are newest by mtime
+        for i, (name, tag) in enumerate([("20261003T000000Z-ccc.rescored.scores.json", "rescored"),
+                                          ("MERGED-aaa.scores.json", "merged"),
+                                          ("20261001T000000Z-aaa.scores.json", "old"),
+                                          ("20261002T000000Z-bbb.scores.json", "newest")][::-1]):
+            (d / name).write_text(json.dumps({"scores": [{"tag": tag}]}))
+            os.utime(d / name, (1000 + i, 1000 + i))
+        (d / "20261004T000000Z-bad.scores.json").write_text("{not json")
+        check("newest stamp wins; MERGED, rescored and unparseable skipped", rm.latest_scores(d), [{"tag": "newest"}])
+    check("no scorecards dir", rm.latest_scores(Path("/nonexistent-scorecards")), [])
+
+
+def test_main_stop_returns_1_and_resume_supersedes():
+    """main() with a fake run_one: a stopped matrix exits 1 and writes stubs; --resume re-runs the
+    stubs and exhausted transcripts, moves the old ones (and sidecars) aside, never touches runs/archive."""
+    outcomes = iter(["ok", "limited", "limited"])
+    ts = "20261015T030000Z_"
+
+    def fake_run_one(task, layer, model, tasks_dir, configs_dir, runs_dir, **kw):
+        stem = rm.item_stem({"task": task, "label": kw["rung"], "model": model, "effort": kw["effort"],
+                             "i": kw["repeat_index"], "repeat": kw["repeat_total"]})
+        out = next(outcomes, "ok")
+        meta = {"rate_limited": out == "limited"}
+        kw["budget"].record(0, out == "limited")
+        f = Path(runs_dir) / f"{ts}{stem}.json"
+        Path(runs_dir).mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"_meta": meta}))
+        f.with_suffix(".trace.jsonl").write_text("{}")
+        return f
+
+    orig = (rm.run_one, rm.oauth_token, sys.argv)
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "tasks" / "t").mkdir(parents=True)
+        (d / "tasks" / "t" / "meta.yaml").write_text("")
+        (d / "configs" / "bare").mkdir(parents=True)
+        (d / "runs" / "archive").mkdir(parents=True)
+        (d / "runs" / "archive" / f"{ts}t_bare_m_high_r2.json").write_text(json.dumps({"_meta": {"rate_limited": True}}))
+        argv = ["run_matrix.py", "--tasks", "t", "--layers", "bare", "--models", "m", "--effort", "high", "--repeat", "4",
+                "--tasks-dir", str(d / "tasks"), "--config-dir", str(d / "configs"), "--runs-dir", str(d / "runs"),
+                "--ws-root", str(d / "ws"), "--scorecards-dir", str(d / "sc")]
+        rm.run_one, rm.oauth_token = fake_run_one, lambda: "tok"
+        try:
+            sys.argv = argv
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = rm.main()
+            check("stopped matrix returns 1", rc, 1)
+            runs = d / "runs"
+            valid, stale = rm.scan_runs(runs)
+            check("r1 valid; r2, r3 exhausted, r4 stub", (sorted(valid), sorted(stale)),
+                  (["t_bare_m_high_r1"], ["t_bare_m_high_r2", "t_bare_m_high_r3", "t_bare_m_high_r4"]))
+            outcomes = iter([])  # every re-run succeeds
+            sys.argv = argv + ["--resume"]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = rm.main()
+            check("resumed matrix returns 0", rc, 0)
+            valid, stale = rm.scan_runs(runs)
+            check("all four cells valid, nothing stale left in runs/", (len(valid), stale), (4, {}))
+            check("each stem scored once", sorted(p.name.split("_", 1)[1] for p in runs.glob("*.json")),
+                  [f"t_bare_m_high_r{i}.json" for i in (1, 2, 3, 4)])
+            check("old r2/r3/r4 moved aside with the r2 sidecar",
+                  sorted(p.name.split("_", 1)[1] for p in (runs / "superseded").iterdir()),
+                  ["t_bare_m_high_r2.json", "t_bare_m_high_r2.trace.jsonl", "t_bare_m_high_r3.json",
+                   "t_bare_m_high_r3.trace.jsonl", "t_bare_m_high_r4.json"])
+            check("archive untouched", [p.name for p in (runs / "archive").iterdir()], [f"{ts}t_bare_m_high_r2.json"])
+        finally:
+            rm.run_one, rm.oauth_token, sys.argv = orig
 
 
 if __name__ == "__main__":

@@ -743,6 +743,20 @@ def load_history(scorecards_dir: Path) -> list[list[dict]]:
     return out
 
 
+def latest_scores(scorecards_dir: Path) -> list[dict]:
+    """Records of the newest run by the stamp in its file name (not mtime). `MERGED-*` aggregates and
+    `rescored` copies are skipped: they are not a single run's verdicts."""
+    files = sorted((f for f in scorecards_dir.glob("*.scores.json")
+                    if re.match(r"\d{8}T\d{6}Z", f.name) and "rescored" not in f.name),
+                   key=lambda f: f.name, reverse=True)
+    for f in files:
+        try:
+            return json.loads(f.read_text()).get("scores", [])
+        except (ValueError, AttributeError):
+            continue
+    return []
+
+
 def estimate_cost(history: list[list[dict]], run_counts: dict[str, int], multi_turn: set[str]) -> dict:
     """Estimate cost and serial wall time from past runs.
 
@@ -777,6 +791,13 @@ def _base_layer(rung) -> str:
     return re.split(r"[@~]", str(rung))[0]
 
 
+def _model_family(model) -> str:
+    """opus/sonnet/haiku for any model id or alias (`claude-sonnet-4-6` -> `sonnet`); anything else unchanged.
+    History holds full ids, `--models` passes aliases: keys must match across both."""
+    m = str(model).lower()
+    return next((f for f in ("opus", "sonnet", "haiku") if f in m), str(model))
+
+
 def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]:
     """Nominal cost estimate per item: [{"est": usd, "source": str}], parallel to `items`.
 
@@ -791,16 +812,20 @@ def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]
         if r.get("repeat_majority") or r.get("infra_reason") == "skipped":
             continue
         b, e = _base_effort(r)
+        b = _model_family(b)
         c = r.get("cost_usd") or 0
         by_cell[(r.get("task"), _base_layer(r.get("rung", "")), b, e)].append(c)
         by_noeff[(r.get("task"), _base_layer(r.get("rung", "")), b)].append(c)
     cell = {k: statistics.mean(v) for k, v in by_cell.items()}
     noeff = {k: statistics.mean(v) for k, v in by_noeff.items()}
-    ratios = model_ratios(history_records)
+    ratios = {}
+    for k, v in model_ratios(history_records).items():  # keyed by raw id in stats; re-key by family
+        if not isinstance(ratios.get(_model_family(k)), float):
+            ratios[_model_family(k)] = v
     all_means = list(cell.values())
     out = []
     for it in items:
-        task, layer, model, effort = it["task"], _base_layer(it["layer"]), it["model"], it["effort"]
+        task, layer, model, effort = it["task"], _base_layer(it["layer"]), _model_family(it["model"]), it["effort"]
         if (task, layer, model, effort) in cell:
             est, src = cell[(task, layer, model, effort)], "measured"
         elif (task, layer, model) in noeff:
@@ -826,14 +851,14 @@ UNMEASURED_SOURCES = ("sonnet-ratio", "layer-model-median", "global-median", "no
 
 
 def discriminating_set(records: list[dict]) -> set:
-    """{(task, base_model)} whose pass/fail differs across layers (rungs) in `records`
+    """{(task, model family)} whose pass/fail differs across layers (rungs) in `records`
     (the latest scores file). Infra and majority rows are ignored; a rung's verdict is its pass rate >= 0.5."""
     from stats import _base_effort
     per: dict = defaultdict(lambda: defaultdict(list))
     for r in records:
         if r.get("infra_error") or r.get("repeat_majority"):
             continue
-        per[(r.get("task"), _base_effort(r)[0])][_base_layer(r.get("rung", ""))].append(bool(r.get("passed")))
+        per[(r.get("task"), _model_family(_base_effort(r)[0]))][_base_layer(r.get("rung", ""))].append(bool(r.get("passed")))
     return {k for k, rungs in per.items()
             if len({sum(v) / len(v) >= 0.5 for v in rungs.values()}) > 1}
 
@@ -841,7 +866,7 @@ def discriminating_set(records: list[dict]) -> set:
 def order_items(items: list[dict], ests: list[dict], disc: set) -> list[tuple[dict, dict]]:
     """(item, estimate) pairs sorted by (repeat_index, not discriminating(task, model), est_cost):
     cheap discriminating first-repeat cells run first, so a stopped night still yields verdicts."""
-    return sorted(zip(items, ests), key=lambda p: (p[0]["i"], (p[0]["task"], p[0]["model"]) not in disc, p[1]["est"]))
+    return sorted(zip(items, ests), key=lambda p: (p[0]["i"], (p[0]["task"], _model_family(p[0]["model"])) not in disc, p[1]["est"]))
 
 
 def fit_block(ordered: list[tuple[dict, dict]], window_usd: float) -> list[str]:
@@ -889,7 +914,7 @@ class MatrixBudget:
 
     def record(self, cost, exhausted: bool) -> float:
         with self.lock:
-            self.cum += cost or 0
+            self.cum += cost or 0  # lower bound: a timed-out run and every attempt before a retry add $0
             self.streak = self.streak + 1 if exhausted else 0
             if self.streak >= self.stop_after:
                 self.stop.set()
@@ -903,10 +928,10 @@ def item_stem(it: dict) -> str:
 
 
 def scan_runs(runs_dir: Path) -> tuple[set, dict]:
-    """(stems with a valid _meta, {stem: path} of `skipped` stubs). Valid = parseable transcript whose
-    _meta is a dict and is not a stub or an exhausted rate-limit/auth failure (those re-run on resume).
-    Stem = file name minus the leading timestamp and `.json`."""
-    valid, stubs = set(), {}
+    """(stems with a valid _meta, {stem: [paths]} to supersede). Valid = parseable transcript whose
+    _meta is a dict and is not a stub or an exhausted rate-limit/auth failure (those re-run on resume,
+    so they are the second element). Stem = file name minus the leading timestamp and `.json`."""
+    valid, stale = set(), {}
     for f in runs_dir.glob("*.json"):
         stem = re.sub(r"^\d{8}T\d{6}Z_", "", f.stem)
         try:
@@ -915,11 +940,21 @@ def scan_runs(runs_dir: Path) -> tuple[set, dict]:
             continue
         if not isinstance(meta, dict):
             continue
-        if meta.get("skipped"):
-            stubs[stem] = f
-        elif not (meta.get("rate_limited") or meta.get("auth_error")):
+        if meta.get("skipped") or meta.get("rate_limited") or meta.get("auth_error"):
+            stale.setdefault(stem, []).append(f)
+        else:
             valid.add(stem)
-    return valid, stubs
+    return valid, stale
+
+
+def supersede_runs(runs_dir: Path, paths: list) -> None:
+    """Move transcripts a resume re-runs, with their sidecars (same stem), to runs_dir/superseded/ so
+    they are not scored twice next to the new run. Non-recursive: runs/archive/ is never touched."""
+    dest = runs_dir / "superseded"
+    for f in paths:
+        for side in runs_dir.glob(f"{f.stem}.*"):
+            dest.mkdir(exist_ok=True)
+            side.replace(dest / side.name)
 
 
 def write_skipped(it: dict, runs_dir: Path, os_sha: str, cum: float, reason: str) -> Path:
@@ -943,10 +978,11 @@ def execute_items(items: list, runner, jobs: int = 1, stop=None, on_skip=None) -
     `stop` (a threading.Event): once set, items not yet launched are handed to on_skip(item)
     instead of runner; runs already in flight finish.
 
-    jobs=1: plain serial, in item order. jobs>1: one-shot items (item["multi_turn"] false)
-    go through a thread pool, then multi-turn items run serially after it. Each run writes
-    only its own workspace/transcript files; the results list and failure count are shared,
-    so they are only touched under a lock (or from the main thread)."""
+    jobs=1: plain serial, in item order. jobs>1: in rounds by repeat index (item["i"]); each
+    round sends its one-shot items (item["multi_turn"] false) through a thread pool, then runs its
+    multi-turn items serially, so a stopped matrix still has every r1 cell run before any r2.
+    Each run writes only its own workspace/transcript files; the results list and failure count
+    are shared, so they are only touched under a lock (or from the main thread)."""
     results, failures, lock = [], 0, threading.Lock()
 
     def one(item):
@@ -970,10 +1006,12 @@ def execute_items(items: list, runner, jobs: int = 1, stop=None, on_skip=None) -
             one(item)
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            list(pool.map(one, [i for i in items if not i["multi_turn"]]))
-        for item in items:
-            if item["multi_turn"]:
-                one(item)
+            for rnd in sorted({i.get("i", 1) for i in items}):  # items without an index form one round
+                batch = [i for i in items if i.get("i", 1) == rnd]
+                list(pool.map(one, [i for i in batch if not i["multi_turn"]]))
+                for item in batch:
+                    if item["multi_turn"]:
+                        one(item)
     return results, failures
 
 
@@ -1068,12 +1106,12 @@ def main() -> int:
     ]
     history = load_history(Path(args.scorecards_dir))
     planned_items = len(items)
-    stubs = {}
+    stale = {}
     if args.resume:
-        valid, stubs = scan_runs(runs_dir)
+        valid, stale = scan_runs(runs_dir)
         items = [it for it in items if item_stem(it) not in valid]
     ordered = order_items(items, estimate_items([x for h in history for x in h], items),
-                          discriminating_set(history[0] if history else []))
+                          discriminating_set(latest_scores(Path(args.scorecards_dir))))
     items = [it for it, _ in ordered]
 
     if args.dry_run:
@@ -1101,7 +1139,7 @@ def main() -> int:
         est = estimate_cost(history, counts,
                             {t for t, m in metas.items() if m["multi_turn"]})
         wall_par = est["secs_one"] / jobs + est["secs_multi"]
-        print(f"estimate from past Sonnet runs: ${est['cost']:.2f}, serial wall "
+        print(f"legacy estimate (all models pooled, no fallbacks; the verdict below is the fit block): ${est['cost']:.2f}, serial wall "
               f"{(est['secs_one'] + est['secs_multi']) / 60:.0f} min; with --jobs {jobs}: {wall_par / 60:.0f} min")
         from stats import model_ratios  # lazy: stats imports score, which imports this module
         ratios = model_ratios([x for h in history for x in h])
@@ -1125,9 +1163,8 @@ def main() -> int:
     ws_root.mkdir(parents=True, exist_ok=True)
 
     budget = MatrixBudget()
-    for it in items:  # re-running a cell replaces its `skipped` stub from a stopped matrix
-        if item_stem(it) in stubs:
-            stubs[item_stem(it)].unlink(missing_ok=True)
+    for it in items:  # re-running a cell supersedes its `skipped` stub / exhausted transcripts from a stopped matrix
+        supersede_runs(runs_dir, stale.get(item_stem(it), []))
 
     def runner(it):
         return run_one(
