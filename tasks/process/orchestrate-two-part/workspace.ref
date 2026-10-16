@@ -1,0 +1,10 @@
+# Workspace Reference — orchestrate-two-part
+
+## Git SHA reference
+```
+repo: bcns-mini
+origin: /Users/nateseluga/os-evals-fixtures/bcns-mini
+sha: 4a8f7409f71715acdcb6b98a74807812cbb41911
+solution_sha: 801a964bd6242878b0b07b2e4a0bb3c61e0d98c5   # branch solution/two-part
+```
+Zero-dependency Node 22 ESM; no setup.sh needed. Base has 13 tests, the solution 19.
