@@ -6,7 +6,7 @@ set -uo pipefail
 # FAIL (1): any of the above fails.
 # EXIT 2: WORKSPACE_DIR unset/missing, or infra problem (no node, no test dir).
 # Trace: $TRACE_FILE (stream-json); set but missing -> exit 2. Unset -> $WORKSPACE_DIR/trace.jsonl only
-# for fixture paths (*/tests/*, */os-evals-validate/*); otherwise the trace checks are skipped.
+# for fixture paths (*/tests/*, */os-evals-validate/*, under $VALIDATE_TMP); otherwise the trace checks are skipped.
 # Needs node and python3. Reads (ignores) the transcript JSON on stdin.
 
 TASK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +30,10 @@ else
     case "$WS" in
         */tests/*|*/os-evals-validate/*) [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl" ;;
     esac
+    # validate_checks.sh honors VALIDATE_TMP; fixtures then live under it.
+    if [ -z "$TRACE" ] && [ -n "${VALIDATE_TMP:-}" ]; then
+        case "$WS" in "$VALIDATE_TMP"/*) [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl" ;; esac
+    fi
 fi
 
 # (1) the workspace's own tests
