@@ -309,6 +309,11 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
             "result_snippet": snippet,
         }
 
+    # A cell the matrix never launched (run_matrix stop event) is a stub, not a run.
+    if meta.get("skipped"):
+        return {**base, "passed": False, "check_rc": 2, "infra_error": True, "infra_reason": "skipped",
+                "check_output": f"skipped: {meta.get('skipped_reason', 'matrix stopped')}", "result_snippet": snippet}
+
     # Auth/OAuth-expiry or 429 rate-limit detected mid-run is infra, not a task failure.
     # Map both to check_rc==2 (unscoreable) WITHOUT running check.sh — neither tells us
     # anything about the task. Rate-limit is checked first; auth takes precedence if both.
