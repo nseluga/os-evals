@@ -15,8 +15,10 @@ import json
 import math
 import random
 import sys
+import threading
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -33,10 +35,10 @@ MAX_NOTE = 2000
 
 
 # --------------------------------------------------------------------------- artifact text
-TASKS_DIR = REPO / "tasks"  # set per build; only the local artifact_text reads it
+DIGEST_MARK = "\n\n## Tool-use digest\n"  # judge.build_artifact appends this for category: process tasks
 
 try:
-    from judge import artifact_text  # item 1.5; may return str or (str, truncated)
+    from judge import artifact_text  # item 1.5: (run_file, tasks_dir) -> (text, truncated)
 except ImportError:
     def _judge_files(task_dir):
         """Column-0 `judge_files:` in meta.yaml: inline `a, b` / `[a, b]`, or `- x` list lines."""
@@ -60,15 +62,17 @@ except ImportError:
             return out
         return []
 
-    def artifact_text(run):
+    def artifact_text(run_file, tasks_dir):
         """Result text + files named by task meta `judge_files:` (diff vs seed/ when present).
 
-        Returns (text, truncated); 8 KB cap. Same signature as judge.artifact_text.
+        Returns (text, truncated); 8 KB cap, "\n[... truncated]" appended when cut.
+        Same signature and behaviour as judge.artifact_text.
         """
-        meta = run.get("_meta") or {}
-        parts = [run.get("result") or ""]
+        t = json.loads(Path(run_file).read_text())
+        meta = t.get("_meta") or {}
+        parts = [t.get("result") or ""]
         ws = Path(meta.get("workspace_dir") or "")
-        for rel in _judge_files(TASKS_DIR / (meta.get("task") or "_")):
+        for rel in _judge_files(Path(tasks_dir) / (meta.get("task") or "_")):
             f, seed = ws / rel, ws / "seed" / rel
             if ".." in Path(rel).parts or not f.is_file():
                 continue
@@ -78,21 +82,19 @@ except ImportError:
                                                     body.splitlines(True), "", ""))
             parts.append(body)
         text = "\n\n---\n\n".join(p for p in parts if p)
-        return text[:ARTIFACT_CAP], len(text) > ARTIFACT_CAP
+        if len(text) > ARTIFACT_CAP:
+            return text[:ARTIFACT_CAP] + "\n[... truncated]", True
+        return text, False
 
 
 def _artifact(run, tasks_dir):
-    """Normalize artifact_text output (str or (str, bool)) and scrub paths that name files."""
-    global TASKS_DIR
-    TASKS_DIR = Path(tasks_dir)
-    out = artifact_text(run)
-    text, trunc = out if isinstance(out, tuple) else (out, False)
-    meta = run.get("_meta") or {}
-    ws = meta.get("workspace_dir")
+    """Rater-facing artifact text: provider output (str or (str, bool); it adds its own truncation
+    marker) minus the trace digest (it names the skills/agents a run used), workspace path scrubbed."""
+    out = artifact_text(run["path"], tasks_dir)
+    text = (out[0] if isinstance(out, tuple) else out).split(DIGEST_MARK, 1)[0]
+    ws = (run["transcript"].get("_meta") or {}).get("workspace_dir")
     if ws:
         text = text.replace(ws, "[workspace]")
-    if trunc:
-        text += "\n[... truncated]"
     return text
 
 
@@ -126,7 +128,8 @@ def load_runs(scores, runs_dir, tasks_dir):
         effort = r.get("effort", meta.get("effort"))
         out.append({"stem": r["file"][:-5], "task": r["task"], "rung": r["rung"],
                     "model": r.get("model"), "effort": effort, "passed": r["passed"],
-                    "cell": (r["task"], r.get("model"), effort), "transcript": t})
+                    "cell": (r["task"], r.get("model"), effort), "path": runs_dir / r["file"],
+                    "transcript": t})
     return sorted(out, key=lambda x: x["stem"])
 
 
@@ -156,9 +159,8 @@ def candidates(runs):
             s = stratum_of(a, b)
             if s is None:
                 continue
-            if s != 4 and RUNGS.index(a["rung"]) > RUNGS.index(b["rung"]):
-                a, b = b, a
-            strata[s].append((a, b))
+            lo, hi = (b, a) if s != 4 and RUNGS.index(a["rung"]) > RUNGS.index(b["rung"]) else (a, b)
+            strata[s].append((lo, hi))
     if not strata[4]:  # no second valid repeat anywhere: "flipped" -- the same run on both sides
         strata[4] = [(r, r) for r in runs]
     for lst in strata:
@@ -253,6 +255,8 @@ def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=No
     runs = load_runs(scores, runs_dir, tasks_dir)
     rng = random.Random(seed)
     chosen = select(candidates(runs), n, rng, rated_identities(human_dir))
+    if not chosen:
+        raise SystemExit("no eligible pairs: nothing written")
     rng.shuffle(chosen)
     ts = ts or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     rdir = human_dir / "rounds" / ts
@@ -267,8 +271,8 @@ def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=No
             pid = f"p{rng.getrandbits(40):010x}"
         ids.add(pid)
         prompt = (tasks_dir / a["task"] / "prompt.md").read_text()
-        deck.append({"id": pid, "prompt": prompt, "A": _artifact(a["transcript"], tasks_dir),
-                     "B": _artifact(b["transcript"], tasks_dir)})
+        deck.append({"id": pid, "prompt": prompt, "A": _artifact(a, tasks_dir),
+                     "B": _artifact(b, tasks_dir)})
         key[pid] = {"stems": {"A": a["stem"], "B": b["stem"]}, "layers": {"A": a["rung"], "B": b["rung"]},
                     "task": a["task"], "stratum": STRATA[si][0]}
     rdir.mkdir(parents=True)
@@ -304,9 +308,11 @@ input{flex:1;min-width:180px;font:inherit;color:var(--ink);background:var(--card
 </div>
 <script>
 var pair=document.body.dataset.pair;
-function send(p){var n=document.getElementById('note');
+var sent=false;
+function send(p){if(sent)return;sent=true;var n=document.getElementById('note');
 fetch('/pick',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({pair:pair,pick:p,note:n?n.value:''})}).then(function(){location.reload()})}
+body:JSON.stringify({pair:pair,pick:p,note:n?n.value:''})}).then(function(){location.reload()},
+function(){sent=false})}
 document.addEventListener('keydown',function(e){
 var t=e.target;if(t&&t.id==='note'){if(e.key==='Escape')t.blur();return}
 if(!pair||e.ctrlKey||e.metaKey||e.altKey)return;
@@ -393,14 +399,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, "bad pick", "text/plain")
         rec = {"round": s.round_ts, "pair": pair, "pick": pick, "note": note[:MAX_NOTE],
                "ts": datetime.now(timezone.utc).isoformat()}
-        s.picks_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(s.picks_path, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+        with s.lock:  # check + append are one step: a double send can't overwrite a rating
+            done = _answered(s.picks_path, s.round_ts)
+            nxt = next((p for p in s.pairs if p["id"] not in done), None)
+            if nxt is None or nxt["id"] != pair:
+                return self._send(409, "not the current pair", "text/plain")
+            s.picks_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(s.picks_path, "a") as f:
+                f.write(json.dumps(rec) + "\n")
         self._send(200, '{"ok":true}', "application/json")
 
 
 def make_server(round_ts, human_dir, runs_dir, port=0):
-    """HTTPServer for a built round. Pairs whose workspace dir is gone are not served."""
+    """ThreadingHTTPServer for a built round. Pairs whose workspace dir is gone are not served."""
     human_dir, runs_dir = Path(human_dir), Path(runs_dir)
     rdir = human_dir / "rounds" / round_ts
     deck = json.loads((rdir / "deck.json").read_text())["pairs"]
@@ -419,16 +430,50 @@ def make_server(round_ts, human_dir, runs_dir, port=0):
             ok.append(p)
     if not ok:
         raise SystemExit("no servable pairs")
-    srv = HTTPServer(("127.0.0.1", port), Handler)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)  # idle pre-opened browser sockets can't stall it
     srv.pairs, srv.round_ts, srv.picks_path = ok, round_ts, human_dir / "picks.jsonl"
+    srv.lock = threading.Lock()
     return srv
 
 
 # --------------------------------------------------------------------------- report
-def kappa(picks, judge):
-    """3-class Cohen's kappa over labels in {"A","B","tie"}. Equal-length sequences.
-    Returns None when undefined: no items, or chance agreement is 1 (a single label throughout)."""
-    picks, judge = list(picks), list(judge)
+def _rated(picks, keys, round_ts=None):
+    """[(pick, key entry)] for the last pick per (round, pair); skips and pairs without a key dropped."""
+    last = {}
+    for p in picks:
+        if round_ts and p.get("round") != round_ts:
+            continue
+        last[(p.get("round"), p.get("pair"))] = p  # re-rating overwrites
+    out = []
+    for (r, pid), p in sorted(last.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        e = keys.get(r, {}).get("pairs", {}).get(pid)
+        if e is not None and p.get("pick") in ("A", "B", "tie"):
+            out.append((p["pick"], e))
+    return out
+
+
+def _winner(sa, sb):
+    return "tie" if sa == sb else ("A" if sa > sb else "B")
+
+
+def kappa(picks, judge, human_dir=None):
+    """3-class Cohen's kappa over labels in {"A","B","tie"}.
+
+    Label mode: two equal-length sequences -> float, or None when undefined (no items, or chance
+    agreement is 1: a single label throughout).
+    Record mode (stats.py): picks = raw picks.jsonl dicts, judge = {run_stem: score}. Each pick is
+    joined through human/rounds/<round>/key.json to the judge scores of its two sides (higher score
+    wins, equal = tie); skips and pairs missing a score are dropped. -> {"kappa": float|None, "n": int}."""
+    picks = list(picks)
+    if isinstance(judge, Mapping) or any(isinstance(p, dict) for p in picks):
+        keys, hum, jdg = load_keys(human_dir or REPO / "human"), [], []
+        for pick, e in _rated(picks, keys):
+            sa, sb = (judge.get(e["stems"][side]) for side in ("A", "B"))
+            if all(isinstance(v, (int, float)) for v in (sa, sb)):
+                hum.append(pick)
+                jdg.append(_winner(sa, sb))
+        return {"kappa": kappa(hum, jdg), "n": len(hum)}
+    judge = list(judge)
     if len(picks) != len(judge):
         raise ValueError("picks and judge must be the same length")
     n = len(picks)
@@ -456,26 +501,17 @@ def judge_label(runs_dir, stems):
         if not rows or not isinstance(rows[-1].get("score"), (int, float)):
             return None
         sc[side] = rows[-1]["score"]
-    return "tie" if sc["A"] == sc["B"] else ("A" if sc["A"] > sc["B"] else "B")
+    return _winner(sc["A"], sc["B"])
 
 
 def report(round_ts=None, human_dir=None, runs_dir=None):
     """Join picks + key + judge sidecars. Keys: n (kappa-eligible pairs), n_picks, kappa,
     raw_agreement, decisive_agreement, win_rates {"lo>hi": {...}} (None where undefined)."""
     human_dir, runs_dir = Path(human_dir or REPO / "human"), Path(runs_dir or REPO / "runs")
-    keys, last = load_keys(human_dir), {}
-    for p in _jsonl(human_dir / "picks.jsonl"):
-        if round_ts and p.get("round") != round_ts:
-            continue
-        last[(p.get("round"), p.get("pair"))] = p  # re-rating overwrites
     hum, jdg, wins = [], [], {}
     n_picks = 0
-    for (r, pid), p in sorted(last.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
-        e = keys.get(r, {}).get("pairs", {}).get(pid)
-        if e is None or p.get("pick") not in ("A", "B", "tie"):
-            continue  # unknown pair, or skip
+    for pick, e in _rated(_jsonl(human_dir / "picks.jsonl"), load_keys(human_dir), round_ts):
         n_picks += 1
-        pick = p["pick"]
         j = judge_label(runs_dir, e["stems"])
         if j is not None:
             hum.append(pick)

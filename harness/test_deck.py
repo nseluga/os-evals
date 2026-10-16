@@ -4,6 +4,8 @@ Run: python3 harness/test_deck.py
 """
 import json
 import re
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -75,6 +77,22 @@ def counts(key):
     return out
 
 
+def test_candidates_no_rebind():
+    """3 repeats/rung: every cross-rung pair appears exactly once (a, b = b, a used to rebind the loop run)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, ntasks=1)
+        for rung in RUNGS:
+            fx.add("alpha/t00", rung, 3, True, f"Widget answer 0 version {rung[:1]}3.")
+        strata = deck.candidates(deck.load_runs(fx.scores, fx.runs, fx.tasks))
+        check("stratum sizes", [len(x) for x in strata], [9, 9, 18, 0, 15])  # 3x3, 3x3, 2 x 3x3, -, 5 x C(3,2)
+        for i, lst in enumerate(strata):
+            ids = [deck.pair_identity(a, b) for a, b in lst]
+            check(f"stratum {i} no duplicate pairs", len(ids), len(set(ids)))
+        for a, b in strata[1]:
+            assert (a["rung"], b["rung"]) == ("skills", "full"), (a["stem"], b["stem"])
+        check("skills-vs-full unique stems", len({s for a, b in strata[1] for s in (a["stem"], b["stem"])}), 6)
+
+
 def test_quotas_literal():
     check("quota table", [q for _, q in deck.STRATA], [6, 6, 4, 2, 2])
     check("names", [n for n, _ in deck.STRATA],
@@ -122,6 +140,23 @@ def test_fill_forward():
         assert 0 < len(dk) < 20, len(dk)
         assert len(dk) <= 4  # 2 tasks x MAX_PER_TASK
         print(f"  ok  short pool -> {len(dk)} pairs")
+
+
+def test_build_zero_pairs():
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, ntasks=0)
+        try:
+            fx.build()
+            raise AssertionError("empty build returned")
+        except SystemExit as e:
+            assert e.code, e.code
+        check("no round dir written", (fx.human / "rounds").exists(), False)
+        r = subprocess.run([sys.executable, str(Path(deck.__file__)), "build", "--scores-file", str(fx.scores_file()),
+                            "--runs-dir", str(fx.runs), "--tasks-dir", str(fx.tasks), "--human-dir", str(fx.human)],
+                           capture_output=True, text=True)
+        check("CLI exits non-zero", r.returncode != 0, True)
+        assert "no eligible pairs" in r.stderr, r.stderr
+        check("still no human dir", fx.human.exists(), False)
 
 
 def test_exclusions():
@@ -255,6 +290,7 @@ def test_html_blind():
         assert "#000" not in low and "black" not in low
         assert "#3a3f44" in low
         check("title is neutral", "<title>Pair rating</title>" in html, True)
+        assert "var sent=false" in html and "if(sent)return" in html, "in-flight guard missing"
         # escaping
         h = deck.render({"id": "p1", "prompt": "<script>x</script>", "A": "a & b", "B": "\"q\""}, 0, 1)
         assert "<script>x</script>" not in h and "&lt;script&gt;" in h and "a &amp; b" in h
@@ -263,32 +299,50 @@ def test_html_blind():
 
 def test_artifact_normalization():
     ws = Path(tempfile.mkdtemp())
-    run = {"result": "text here", "_meta": {"task": "x/y", "workspace_dir": str(ws)}}
-    orig = deck.artifact_text
+    rf, td = ws / "r.json", ws / "tasks"
+    run = {"path": rf, "transcript": {"_meta": {"task": "x/y", "workspace_dir": str(ws)}}}
+    digest = "\n\n## Tool-use digest\n- Agent subagent_type=dt-engineer model=opus\n- Skill ponytail"
+    orig, calls = deck.artifact_text, []
     try:
-        deck.artifact_text = lambda r: ("plain " + str(ws), True)
-        out = deck._artifact(run, ws)
-        assert str(ws) not in out and out.endswith("[... truncated]"), out
-        deck.artifact_text = lambda r: "just str"
-        check("str form", deck._artifact(run, ws), "just str")
+        def fake(run_file, tasks_dir):
+            calls.append((run_file, tasks_dir))
+            return "## Final response\nok " + str(ws) + "\n[... truncated]" + digest, True
+        deck.artifact_text = fake
+        out = deck._artifact(run, td)
+        check("provider gets (run file, tasks dir)", calls, [(rf, td)])
+        check("marker not doubled", out.count("[... truncated]"), 1)
+        assert str(ws) not in out and "[workspace]" in out, out
+        for leak in ("digest", "subagent_type", "dt-engineer", "ponytail", "opus", "Agent"):
+            assert leak not in out, f"leak via digest: {leak}"
+        deck.artifact_text = lambda rf_, td_: "just str" + digest
+        check("str form + digest cut", deck._artifact(run, td), "just str")
+        deck.artifact_text = lambda rf_, td_: ("no digest here", False)
+        check("no digest untouched", deck._artifact(run, td), "no digest here")
     finally:
         deck.artifact_text = orig
+    # a real build hands real run files to the provider: rater text is the run's result
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, ntasks=6)
+        _, dk, _ = fx.build(n=4)
+        assert dk and all(p["A"].startswith("Widget answer") and p["B"].startswith("Widget answer") for p in dk), dk
     # local equivalent reads judge_files, diffs against seed/
     if not hasattr(deck, "_judge_files"):  # item 1.5's judge.artifact_text is in use
         return
-    td = ws / "tasks" / "x" / "y"
-    td.mkdir(parents=True)
-    (td / "meta.yaml").write_text("category: x\njudge_files: [out.txt, sub/b.txt]\ndescription: |\n  judge_files: nope\n")
-    check("judge_files parse", deck._judge_files(td), ["out.txt", "sub/b.txt"])
+    t = td / "x" / "y"
+    t.mkdir(parents=True)
+    (t / "meta.yaml").write_text("category: x\njudge_files: [out.txt, sub/b.txt]\ndescription: |\n  judge_files: nope\n")
+    check("judge_files parse", deck._judge_files(t), ["out.txt", "sub/b.txt"])
     (ws / "out.txt").write_text("new\n")
     (ws / "seed").mkdir()
     (ws / "seed" / "out.txt").write_text("old\n")
-    deck.TASKS_DIR = ws / "tasks"
-    text, trunc = deck.artifact_text(run)
+    rf.write_text(json.dumps({"result": "text here", "_meta": {"task": "x/y", "workspace_dir": str(ws)}}))
+    text, trunc = deck.artifact_text(rf, td)
     assert "text here" in text and "-old" in text and "+new" in text and not trunc, text
-    run["result"] = "z" * 9000
-    text, trunc = deck.artifact_text(run)
-    check("8KB cap", (len(text), trunc), (8192, True))
+    rf.write_text(json.dumps({"result": "z" * 9000, "_meta": {"task": "x/y", "workspace_dir": str(ws)}}))
+    text, trunc = deck.artifact_text(rf, td)
+    check("8KB cap + marker", (len(text), trunc, text.endswith("\n[... truncated]")),
+          (8192 + len("\n[... truncated]"), True, True))
+    check("_artifact keeps one marker", deck._artifact(run, td).count("[... truncated]"), 1)
 
 
 def test_kappa():
@@ -313,6 +367,59 @@ def test_kappa():
         raise AssertionError("length mismatch accepted")
     except ValueError:
         print("  ok  length mismatch raises")
+
+
+def test_kappa_records():
+    """stats.py shape: kappa(raw picks.jsonl dicts, {stem: score}) -> {"kappa", "n"}, joined via key.json."""
+    with tempfile.TemporaryDirectory() as tmp:
+        human = Path(tmp) / "human"
+        rows = [("p1", "A", 3, 1), ("p2", "B", 1, 3), ("p3", "tie", 2, 2), ("p4", "A", 5, 0),
+                ("p5", "B", 0, 4), ("p6", "skip", 1, 2), ("p7", "A", None, None), ("p8", "A", 2, 9)]
+        _write_round(human, "R1", {pid: (f"{pid}a", "memory", f"{pid}b", "skills") for pid, *_ in rows})
+        scores = {}
+        for pid, _, sa, sb in rows:
+            if sa is not None:
+                scores[f"{pid}a"], scores[f"{pid}b"] = sa, sb
+        picks = [{"round": "R1", "pair": pid, "pick": pk, "note": "", "ts": "x"} for pid, pk, _, _ in rows]
+        picks.append({"round": "R1", "pair": "p8", "pick": "B", "note": "", "ts": "y"})  # last pick wins
+        picks.append({"round": "R1", "pair": "p1", "pick": "skip", "ts": "z"})  # re-rated as a skip: dropped
+        picks.append({"round": "R1", "pair": "zzz", "pick": "A"})  # unknown pair
+        picks.append({"round": "R9", "pair": "p2", "pick": "A"})  # unknown round
+        res = deck.kappa(picks, scores, human_dir=human)
+        # kept: p2 B/B, p3 tie/tie, p4 A/A, p5 B/B, p8 B/B (p1 skip, p6 skip, p7 no score)
+        check("perfect agreement", res, {"kappa": 1.0, "n": 5})
+        # same data through label-list mode and through report()'s sidecar join
+        check("= label-list result", res["kappa"], deck.kappa(["B", "tie", "A", "B", "B"], ["B", "tie", "A", "B", "B"]))
+        picks.append({"round": "R1", "pair": "p4", "pick": "B", "ts": "w"})  # human now disagrees on p4
+        res = deck.kappa(picks, scores, human_dir=human)
+        check("disagreement matches label-list", res,
+              {"kappa": deck.kappa(["B", "tie", "B", "B", "B"], ["B", "tie", "A", "B", "B"]), "n": 5})
+        assert res["kappa"] < 1.0
+        check("generator picks ok", deck.kappa(iter(picks), scores, human_dir=human), res)
+        check("no picks", deck.kappa([], scores, human_dir=human), {"kappa": None, "n": 0})
+        check("no judge scores", deck.kappa(picks, {}, human_dir=human), {"kappa": None, "n": 0})
+        # default human_dir is <repo>/human
+        orig, deck.REPO = deck.REPO, Path(tmp)
+        try:
+            check("default human dir", deck.kappa(picks, scores), res)
+        finally:
+            deck.REPO = orig
+        # label-list mode is unchanged
+        check("labels still float", deck.kappa(["A", "B", "A", "B"], ["A", "B", "A", "B"]), 1.0)
+    with tempfile.TemporaryDirectory() as tmp:  # report() on sidecars and record mode agree
+        human, runs = Path(tmp) / "human", Path(tmp) / "runs"
+        runs.mkdir()
+        _write_round(human, "R1", {"q1": ("q1a", "memory", "q1b", "skills"), "q2": ("q2a", "skills", "q2b", "full"),
+                                   "q3": ("q3a", "memory", "q3b", "skills")})
+        sc = {"q1a": 1, "q1b": 3, "q2a": 4, "q2b": 1, "q3a": 2, "q3b": 2}
+        for stem, v in sc.items():
+            (runs / f"{stem}.judge.jsonl").write_text(json.dumps({"score": v}) + "\n")
+        for pid, pk in (("q1", "A"), ("q2", "A"), ("q3", "tie")):
+            with open(human / "picks.jsonl", "a") as f:
+                f.write(json.dumps({"round": "R1", "pair": pid, "pick": pk}) + "\n")
+        rep = deck.report("R1", human, runs)
+        got = deck.kappa(deck._jsonl(human / "picks.jsonl"), sc, human_dir=human)
+        check("report == record mode", (rep["kappa"], rep["n"]), (got["kappa"], got["n"]))
 
 
 def test_sign_test():
@@ -421,19 +528,56 @@ def test_server():
             assert "ts" in rows[0]
             _, body = _req(base + "/")
             check("advances", "Pair 2 of 3" in body and first not in body, True)
+            # only the current unanswered pair takes a pick: a double send can't turn a rating into a skip
+            second, third = srv.pairs[1]["id"], srv.pairs[2]["id"]
+            check("re-send answered pair rejected", post({"pair": first, "pick": "skip"})[0], 409)
+            check("future pair rejected", post({"pair": third, "pick": "A"})[0], 409)
+            check("rejections wrote nothing", len((fx.human / "picks.jsonl").read_text().splitlines()), 1)
             for p in srv.pairs[1:]:
-                post({"pair": p["id"], "pick": "skip"})
+                check(f"in-order pick {p['id'][:4]}", post({"pair": p["id"], "pick": "skip"})[0], 200)
             _, body = _req(base + "/")
             check("done page", "All 3 pairs answered" in body, True)
+            check("nothing left to pick", post({"pair": second, "pick": "A"})[0], 409)
+            check("rows after rejections", len((fx.human / "picks.jsonl").read_text().splitlines()), 3)
         finally:
             srv.shutdown()
             srv.server_close()
 
 
+def test_server_threaded():
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, ntasks=12)
+        fx.build(n=4)
+        srv = deck.make_server("T1", fx.human, fx.runs)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        base = f"http://127.0.0.1:{port}"
+        idle = socket.create_connection(("127.0.0.1", port))  # a browser's pre-opened, silent socket
+        try:
+            urllib.request.urlopen(base + "/", timeout=3).read()  # single-threaded server: stalls here
+            print("  ok  GET served while an idle socket is open")
+            first, codes = srv.pairs[0]["id"], []
+            body = json.dumps({"pair": first, "pick": "A"}).encode()
+
+            def go():
+                codes.append(_req(base + "/pick", body, {"Content-Type": "application/json"})[0])
+            ts = [threading.Thread(target=go) for _ in range(12)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+            check("12 simultaneous sends: one wins", sorted(codes), [200] + [409] * 11)
+            check("one row", len((fx.human / "picks.jsonl").read_text().splitlines()), 1)
+        finally:
+            idle.close()
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
+    test_candidates_no_rebind()
     test_quotas_literal()
     test_strata_quotas()
     test_fill_forward()
+    test_build_zero_pairs()
     test_exclusions()
     test_already_rated_and_skip_prior()
     test_determinism()
@@ -442,7 +586,9 @@ if __name__ == "__main__":
     test_html_blind()
     test_artifact_normalization()
     test_kappa()
+    test_kappa_records()
     test_sign_test()
     test_report()
     test_server()
+    test_server_threaded()
     print("ALL PASS")
