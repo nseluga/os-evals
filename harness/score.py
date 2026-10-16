@@ -12,7 +12,8 @@ Contract for transcript JSON (from `claude -p --output-format json`):
   num_turns       — turn count
   total_cost_usd  — dollar cost
   usage.iterations — list of per-turn stats (may be empty)
-  _meta.task / _meta.rung / _meta.model — injected by run_matrix.py
+  _meta.task / _meta.rung / _meta.model / _meta.effort — injected by run_matrix.py
+  modelUsage — per-model token counts; summed for total_tokens (usage is the fallback)
   _meta.contaminated — true => not scored (infra_reason "contaminated")
 
 Outputs:
@@ -57,6 +58,13 @@ def extract_stats(transcript: dict) -> dict:
     output_tok = _num(usage.get("output_tokens"))
     total_input = input_tok + cache_read + cache_create
 
+    # `usage` omits subagent/secondary-model traffic; the result event's `modelUsage` has every model.
+    mu = [_dict(v) for v in _dict(transcript.get("modelUsage")).values()]
+    total_tokens = total_input + output_tok
+    if mu:
+        total_tokens = sum(_num(m.get(k)) for m in mu for k in (
+            "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+
     return {
         "turns": _num(transcript.get("num_turns")),
         "input_tokens": input_tok,
@@ -64,7 +72,7 @@ def extract_stats(transcript: dict) -> dict:
         "cache_create_tokens": cache_create,
         "total_input_tokens": total_input,
         "output_tokens": output_tok,
-        "total_tokens": total_input + output_tok,
+        "total_tokens": total_tokens,
         "cost_usd": _num(transcript.get("total_cost_usd")),
         "is_error": bool(transcript.get("is_error", False)),
         "stop_reason": transcript.get("stop_reason") or "",
@@ -131,13 +139,15 @@ def classify_infra(transcript: dict) -> str | None:
 
 
 def run_check(
-    task: str, transcript_text: str, tasks_dir: Path, workspace_dir: str = ""
+    task: str, transcript_text: str, tasks_dir: Path, workspace_dir: str = "", trace_file: str = ""
 ) -> tuple[bool, str, int]:
     """Run tasks/{task}/check.sh with transcript on stdin. Returns (passed, output).
 
     For coding tasks, workspace_dir (from transcript _meta) is passed as WORKSPACE_DIR
     so filesystem/test-based checks can inspect what the model wrote. Text-only checks
-    ignore it (they read only stdin), keeping the original contract a strict subset."""
+    ignore it (they read only stdin), keeping the original contract a strict subset.
+    trace_file (the run's <stem>.trace.jsonl, when it exists) is exported as TRACE_FILE;
+    trace checks skip when it is unset and exit 2 when it is set but missing."""
     check_sh = tasks_dir / task / "check.sh"
     if not check_sh.exists():
         return False, f"check.sh not found: {check_sh}", 2
@@ -145,6 +155,10 @@ def run_check(
     env = {**os.environ}
     if workspace_dir:
         env["WORKSPACE_DIR"] = workspace_dir
+    env.pop("TRACE_FILE", None)  # never inherit a stray value from the caller's shell
+    env.pop("OS_EVALS_VALIDATE", None)  # validate-only marker: a real run must never enable fixture rebuilds
+    if trace_file and Path(trace_file).is_file():
+        env["TRACE_FILE"] = str(trace_file)
 
     result = subprocess.run(
         [str(check_sh)],
@@ -164,7 +178,8 @@ def run_check(
 def read_task_meta(tasks_dir: Path, task: str) -> dict:
     """Pull curated_skill + category from a task's meta.yaml (best-effort, no yaml dep)."""
     meta_file = tasks_dir / task / "meta.yaml"
-    out = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False}
+    out = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False,
+           "layer_neutral": False}
     if not meta_file.exists():
         return out
     for line in meta_file.read_text().splitlines():
@@ -180,7 +195,35 @@ def read_task_meta(tasks_dir: Path, task: str) -> dict:
             out["contaminated"] = s.split(":", 1)[1].strip().lower().startswith("true")
         if s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        if s.startswith("layer_neutral:"):
+            out["layer_neutral"] = s.split(":", 1)[1].strip().lower().startswith("true")
     return out
+
+
+def list_run_files(runs_dir: Path) -> list[Path]:
+    """Transcripts to score. Sidecars (<stem>.judge.jsonl, <stem>.trace.jsonl) are never runs."""
+    return sorted(f for f in Path(runs_dir).glob("*.json") if ".judge." not in f.name and ".trace." not in f.name)
+
+
+def load_judge(run_file: Path):
+    """Latest verdict from <stem>.judge.jsonl as {score, rationale, leak, rubric_sha}, else None.
+    Quarantined: only ever attached as rec["judge"], never read by pass/fail logic."""
+    side = run_file.with_name(run_file.stem + ".judge.jsonl")
+    last = None
+    try:
+        for ln in side.read_text().splitlines():
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and isinstance(e.get("score"), (int, float)):
+                last = e
+    except OSError:
+        return None
+    if last is None:
+        return None
+    return {"score": last["score"], "rationale": last.get("rationale", ""),
+            "leak": last.get("leak") or [], "rubric_sha": last.get("rubric_sha", "")}
 
 
 def score_run(run_file: Path, tasks_dir: Path) -> dict:
@@ -193,7 +236,10 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     meta = _dict(transcript.get("_meta"))
     task = meta.get("task") or run_file.stem.split("_")[1]
     rung = meta.get("rung", 0)
-    model = meta.get("model", "unknown")
+    base_model = meta.get("model", "unknown")
+    effort = meta.get("effort") or _meta_from_filename(run_file.name)["effort"]
+    # ponytail: effort folded into `model` so every existing grouping splits by it — a separate key is the upgrade
+    model = f"{base_model}:{effort}"
     snippet = str(transcript.get("result") or "")[:200]
 
     stats = extract_stats(transcript)
@@ -224,11 +270,14 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "task": task,
         "rung": rung,
         "model": model,
+        "base_model": base_model,
+        "effort": effort,
         "curated_skill": task_meta["curated_skill"],
         "category": task_meta["category"],
         "contaminated": task_meta["contaminated"],
         "group": task_meta["group"],
         "sentinel": task_meta["sentinel"],
+        "layer_neutral": task_meta["layer_neutral"],
         "wall_clock_sec": meta.get("elapsed_sec", 0),
         "multi_turn": multi_turn,
         "timed_out": timed_out,
@@ -239,6 +288,9 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "repeat_total": repeat_total,
         **stats,
     }
+    judge = load_judge(run_file)
+    if judge:
+        base["judge"] = judge
 
     # A run whose tool calls reached outside its workspace (task files, live ~/os, the
     # origin repo) is contaminated: it is neither a model failure nor an infra failure.
@@ -256,6 +308,11 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
             "check_output": f"contaminated: tool call reached outside workspace: {hits[:1]}",
             "result_snippet": snippet,
         }
+
+    # A cell the matrix never launched (run_matrix stop event) is a stub, not a run.
+    if meta.get("skipped"):
+        return {**base, "passed": False, "check_rc": 2, "infra_error": True, "infra_reason": "skipped",
+                "check_output": f"skipped: {meta.get('skipped_reason', 'matrix stopped')}", "result_snippet": snippet}
 
     # Auth/OAuth-expiry or 429 rate-limit detected mid-run is infra, not a task failure.
     # Map both to check_rc==2 (unscoreable) WITHOUT running check.sh — neither tells us
@@ -315,7 +372,8 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
 
     unrunnable = None
     try:
-        passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir)
+        passed, check_output, check_rc = run_check(task, transcript_text, tasks_dir, workspace_dir,
+                                               str(run_file.with_name(run_file.stem + ".trace.jsonl")))
     except subprocess.TimeoutExpired:
         passed, check_output, check_rc, unrunnable = False, "check.sh timed out", 2, "check_timeout"
     except OSError as e:  # FileNotFoundError, PermissionError, bad interpreter, ...
@@ -336,19 +394,27 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
     }
 
 
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 def _meta_from_filename(name: str) -> dict:
-    """Best-effort task/rung/model/repeat from `<ts>_<task>_<rung>_<model>[_rN].json`."""
+    """Best-effort task/rung/model/effort/repeat from `<ts>_<task>_<rung>_<model>[_<effort>][_rN].json`.
+
+    No effort segment (pre-effort filenames) -> effort "default"."""
     stem = re.sub(r"\.json$", "", name)
     rep = re.search(r"_r(\d+)$", stem)
     if rep:
         stem = stem[: rep.start()]
     parts = stem.split("_")
+    effort = "default"
+    if len(parts) > 4 and parts[-1] in EFFORTS:
+        effort = parts.pop()
     task = parts[1] if len(parts) > 1 else stem
     rung = parts[2] if len(parts) > 2 else "unknown"
     m = re.fullmatch(r"rung(\d+)", rung)
     if m:
         rung = int(m.group(1))
-    return {"task": task, "rung": rung, "model": "_".join(parts[3:]) or "unknown",
+    return {"task": task, "rung": rung, "model": "_".join(parts[3:]) or "unknown", "effort": effort,
             "repeat_index": int(rep.group(1)) if rep else None}
 
 
@@ -364,14 +430,17 @@ def exception_record(run_file: Path, tasks_dir: Path, exc: Exception) -> dict:
     try:
         tm = read_task_meta(tasks_dir, task)
     except Exception:
-        tm = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False}
+        tm = {"curated_skill": "", "category": "", "contaminated": False, "group": "", "sentinel": False,
+              "layer_neutral": False}
     ri = meta.get("repeat_index") if meta.get("repeat_index") is not None else fn["repeat_index"]
     return {
         "file": run_file.name, "task": task,
         "rung": meta.get("rung") if meta.get("rung") is not None else fn["rung"],
-        "model": meta.get("model") or fn["model"],
+        "model": f"{meta.get('model') or fn['model']}:{meta.get('effort') or fn['effort']}",
+        "base_model": meta.get("model") or fn["model"], "effort": meta.get("effort") or fn["effort"],
         "curated_skill": tm["curated_skill"], "category": tm["category"],
         "contaminated": tm["contaminated"], "group": tm["group"], "sentinel": tm["sentinel"],
+        "layer_neutral": tm.get("layer_neutral", False),
         "is_repeat_individual": ri is not None, "repeat_index": ri,
         "repeat_total": meta.get("repeat_total"),
         "total_tokens": 0, "cost_usd": 0, "turns": 0, "passed": False, "check_rc": 2,
@@ -459,6 +528,11 @@ def compute_majority_records(scores: list[dict]) -> list[dict]:
             "repeat_total": declared_total,
             "repeat_index": None,
         }
+        majority_record.pop("judge", None)
+        judged = [r["judge"]["score"] for r in valid_members if r.get("judge")]
+        if judged:
+            majority_record["judge_mean"] = round(sum(judged) / len(judged), 3)
+            majority_record["judge_n"] = len(judged)
         majority_records.append(majority_record)
         tag = "INFRA" if group_infra else ("PASS" if majority_passed else "FAIL")
         print(
@@ -480,7 +554,7 @@ def main() -> int:
     runs_dir = Path(args.runs_dir)
     tasks_dir = Path(args.tasks_dir)
 
-    run_files = sorted(runs_dir.glob("*.json"))
+    run_files = list_run_files(runs_dir)
     if not run_files:
         print("score.py: no run files found", file=sys.stderr)
         return 1

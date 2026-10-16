@@ -1,0 +1,30 @@
+category: puzzles
+tools: none  # self-contained puzzle; no tools needed
+contaminated: false
+group: clean
+repeat: 3
+default: true
+timeout_sec: 600
+max_budget_usd: 0.75
+# layer_neutral: runs on bare only, kept in the cost/quality frontier, excluded from layer verdicts
+layer_neutral: true
+signals: exact-answer  # k-of-n over the 3 repeats: a repeat passes only if all four values match
+description: |
+  Synthetic capability puzzle (not an ~/os task): raw model x effort accuracy for the
+  cost/quality frontier.
+
+  Instance: a 30-instruction stack machine (3 registers, stack; PUSH n|reg, POP r, ADD,
+  SUB, MUL, DUP, SWAP, JZ off, JMP off, INC r, DEC r, HALT) listed in the prompt, shaped as
+  preamble, counted loop, data-dependent skip, HALT. Jump offsets are relative to the
+  jump's own index. Deviation from the bare instruction list: PUSH accepts a register
+  name, otherwise registers could never be read. Question: final R0, R1, R2 and stack
+  depth at HALT. gen.py guarantees the programme halts within 500 steps with >= 2 taken
+  jumps and a non-empty final stack. The committed prompt.md is seed 7.
+
+  Key (seed 7, by simulation in gen.py): R0=0 R1=841 R2=16 depth=1 (68 steps, 6 taken jumps).
+
+  Regenerate: python3 gen.py --seed N [--key]. --key appends the answer key. Embedded
+  answer in check.sh is for seed 7 only; changing the seed means updating check.sh.
+
+  Check: text-only, reads {"result": ...} on stdin; takes the last "R0=.. / R1=.. / R2=.. /
+  depth=.." occurrence of each (bold, spaces, commas tolerated). 0 all four right, 1 else.

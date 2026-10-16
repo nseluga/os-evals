@@ -2,6 +2,7 @@ category: analysis
 gate: capability
 contaminated: false
 group: clean
+judge_files: test_solution.py
 curated_skill: dt-qa
 source: authored fixture (self-contained; planted contract bug)
 description: |

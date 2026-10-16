@@ -14,11 +14,16 @@ Outputs:
 """
 
 import argparse
+import hashlib
 import json
+import statistics
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+from score import EFFORTS
+
+DEFAULT_HISTORY = Path(__file__).resolve().parent.parent / "scorecards" / "history.jsonl"
 RUNG_PAIRS = [(1, 2), (2, 3), (3, 4), (1, 4)]   # legacy int rungs (pre-layers runs)
 LADDER = ["bare", "claude-md", "memory", "skills", "full"]
 
@@ -32,7 +37,7 @@ def _rung_key(r):
     """Sort key: legacy ints first, then layers in ladder order, then anything else by name."""
     if isinstance(r, int):
         return (0, r, "")
-    base = str(r).split("@")[0]
+    base = str(r).split("@")[0].split("~")[0]  # a knockout variant sorts with its base
     return (1, LADDER.index(base) if base in LADDER else len(LADDER), str(r))
 
 
@@ -42,10 +47,17 @@ def select_pairs(rungs, order=None) -> list[tuple]:
     Legacy int rungs keep RUNG_PAIRS. Layer names: A/B (`full@A`, `full@B`) pairs the two
     shas in the order given. Otherwise adjacent entries of the ORDER THE USER PASSED are
     paired, wherever they sit in the full ladder (`bare,skills` -> [(bare, skills)]); with
-    no order, ladder order is used. Fewer than two layers -> []."""
+    no order, ladder order is used. Fewer than two layers -> [].
+
+    A knockout variant `<base>~<mod>` whose base is present is not part of the ladder; it adds one
+    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep)."""
     present = set(rungs)
     if present and all(isinstance(r, int) for r in present):
         return [(lo, hi) for lo, hi in RUNG_PAIRS if lo in present and hi in present]
+    var = sorted((r for r in present if "~" in str(r) and str(r).split("~")[0] in present), key=_rung_key)
+    if var:
+        rest = select_pairs(present - set(var), [r for r in order or [] if r not in var] or None)
+        return rest + [(v, v.split("~")[0]) for v in var]
     given = list(dict.fromkeys(r for r in (order or []) if r in present))
     ab = [r for r in given if "@" in str(r)]
     if len(ab) < 2:
@@ -66,6 +78,10 @@ def sign_test(a_wins: int, b_wins: int, ties: int) -> str:
 
 def _is_sentinel(s: dict) -> bool:
     return bool(s.get("sentinel", False))
+
+
+def _is_layer_neutral(s: dict) -> bool:
+    return bool(s.get("layer_neutral", False))
 
 
 def _is_repeat_individual(s: dict) -> bool:
@@ -89,8 +105,9 @@ def compute_stats(scores: list[dict], order=None) -> dict:
     """Group scores by task+rung, compute per-rung-pair sign tests.
 
     Sentinel tasks are excluded — they only run at rung1 and serve as difficulty
-    anchors, not as evidence about layer transitions."""
-    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
+    anchors, not as evidence about layer transitions. layer_neutral tasks (bare only) are
+    excluded the same way but stay in the frontier/cost tables."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_layer_neutral(s)]
 
     # infra_error runs are excluded from `by_task_rung` (so they can never win/lose a
     # pairwise comparison) but tracked separately so a comparison touching one is
@@ -168,6 +185,203 @@ def token_summary(scores: list[dict]) -> dict:
     }
 
 
+# ---- Cost/quality frontier + run history (item 1.4) ----
+
+def _frontier_records(scores: list[dict]) -> list[dict]:
+    """Individual valid records: repeat individuals and non-repeat rows, never the
+    majority-vote summary rows (their tokens/cost are sums over the repeats)."""
+    return [s for s in scores if not _is_sentinel(s) and not _is_infra(s)
+            and (_is_repeat_individual(s) or not s.get("repeat_majority"))]
+
+
+def frontier_cells(scores: list[dict]) -> dict[tuple, dict]:
+    """(rung, model, effort) -> {n, pass_rate, mean_cost_usd, pass_per_dollar, pareto}."""
+    groups: dict[tuple, list] = defaultdict(list)
+    for s in _frontier_records(scores):
+        groups[(s["rung"], s.get("model", ""), s.get("effort") or "default")].append(s)
+    cells = {}
+    for key, rs in groups.items():
+        rate = sum(1 for s in rs if s.get("passed")) / len(rs)
+        cost = sum(s.get("cost_usd") or 0 for s in rs) / len(rs)
+        cells[key] = {"n": len(rs), "pass_rate": rate, "mean_cost_usd": cost,
+                      "pass_per_dollar": rate / cost if cost > 0 else None}
+    for key, flag in pareto_flags(cells).items():
+        cells[key]["pareto"] = flag
+    return cells
+
+
+def pareto_flags(cells: dict[tuple, dict]) -> dict[tuple, bool]:
+    """True when no other cell is at least as good on both axes and strictly better on one."""
+    def dominates(a, b):
+        return (a["pass_rate"] >= b["pass_rate"] and a["mean_cost_usd"] <= b["mean_cost_usd"]
+                and (a["pass_rate"] > b["pass_rate"] or a["mean_cost_usd"] < b["mean_cost_usd"]))
+    return {k: not any(dominates(o, c) for ok, o in cells.items() if ok != k) for k, c in cells.items()}
+
+
+def frontier_section(scores: list[dict]) -> list[str]:
+    cells = frontier_cells(scores)
+    if not cells:
+        return []
+    lines = ["## Cost/Quality Frontier (per run)", "",
+             "Individual runs (repeats not summed). Pareto = no other cell passes at least as often for less cost.", "",
+             "| Rung | Model | Effort | N | Pass rate | Mean cost | Pass/$ | Pareto |",
+             "|------|-------|--------|---|-----------|-----------|--------|--------|"]
+    for (rung, model, effort), c in sorted(cells.items(), key=lambda kv: (_rung_key(kv[0][0]), kv[0][1], kv[0][2])):
+        ppd = f"{c['pass_per_dollar']:.1f}" if c["pass_per_dollar"] is not None else "n/a"
+        lines.append(f"| {_rl(rung)} | {model} | {effort} | {c['n']} | {c['pass_rate']:.0%} | "
+                     f"${c['mean_cost_usd']:.4f} | {ppd} | {'yes' if c['pareto'] else ''} |")
+    lines.append("")
+    return lines
+
+
+def task_set_hash(scores: list[dict]) -> str:
+    return hashlib.sha256("\n".join(sorted({s["task"] for s in scores})).encode()).hexdigest()[:12]
+
+
+def history_line(data: dict, stamp: str = "") -> dict:
+    """One run summary. Pass counts follow the Pass/Fail table (effective, non-sentinel,
+    non-layer_neutral, non-infra rows). Cost is real spend: every individual row (repeat individuals and
+    non-repeat rows), infra and sentinel rows included, never the repeat_majority sums."""
+    scores = data.get("scores", [])
+    rungs: dict[str, dict] = {}
+    for s in _effective_scores(scores):
+        if _is_sentinel(s) or _is_layer_neutral(s) or _is_infra(s):
+            continue
+        r = rungs.setdefault(_rl(s["rung"]), {"pass": 0, "n": 0})
+        r["n"] += 1
+        r["pass"] += bool(s.get("passed"))
+    cost: dict[str, float] = defaultdict(float)
+    for s in scores:
+        if _is_repeat_individual(s) or not s.get("repeat_majority"):
+            cost[s.get("model", "")] += s.get("cost_usd") or 0
+    return {"stamp": stamp, "os_sha": data.get("os_sha", "unknown"), "task_set": task_set_hash(scores),
+            "rungs": rungs, "cost_by_model": {m: round(c, 4) for m, c in sorted(cost.items())},
+            "n": sum(r["n"] for r in rungs.values())}
+
+
+def stamp_of(path) -> str:
+    n = Path(path).name
+    return n[:-len(".scores.json")] if n.endswith(".scores.json") else Path(path).stem
+
+
+def backfill_history(scorecards_dir, history_path) -> int:
+    """Regenerate history_path from every scorecards_dir/*.scores.json; returns lines written."""
+    lines = []
+    for f in sorted(Path(scorecards_dir).glob("*.scores.json")):
+        try:
+            d = json.loads(f.read_text())
+            if not isinstance(d, dict) or not d.get("scores"):
+                raise ValueError("no scores")
+            lines.append(json.dumps(history_line(d, stamp_of(f)), sort_keys=True))
+        except (ValueError, KeyError, TypeError) as e:
+            print(f"stats.py: skipping {f.name}: {e}", file=sys.stderr)
+    Path(history_path).write_text("".join(l + "\n" for l in lines))
+    return len(lines)
+
+
+def trend_section(scores: list[dict], history_path=None, limit: int = 8) -> list[str]:
+    try:
+        raw = Path(history_path or DEFAULT_HISTORY).read_text().splitlines()
+    except OSError:
+        return []
+    ts = task_set_hash(scores)
+    by_stamp = {}
+    for ln in raw:
+        try:
+            h = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(h, dict) and h.get("task_set") == ts:
+            by_stamp[h.get("stamp", "")] = h   # last line per stamp wins
+    rows = [by_stamp[k] for k in sorted(by_stamp)][-limit:]
+    if not rows:
+        return []
+    lines = ["## Trend across os commits", "",
+             f"Last {len(rows)} runs of this task set (hash `{ts}`), from history.jsonl.", "",
+             "| Stamp | os SHA | N | Pass/N by rung | Cost by model |", "|-------|--------|---|----------------|---------------|"]
+    for h in rows:
+        rg = ", ".join(f"{r} {v['pass']}/{v['n']}" for r, v in sorted(h.get("rungs", {}).items(), key=lambda kv: _rung_key(kv[0])))
+        cb = ", ".join(f"{m} ${c:.2f}" for m, c in h.get("cost_by_model", {}).items())
+        lines.append(f"| {h.get('stamp','')} | `{h.get('os_sha','')}` | {h.get('n',0)} | {rg} | {cb} |")
+    lines.append("")
+    return lines
+
+def _base_effort(s: dict) -> tuple[str, str]:
+    """(base_model, effort) of a score record; older records only have `model` (no effort -> "default")."""
+    m = s.get("model", "")
+    base, _, eff = m.partition(":")
+    return s.get("base_model") or base, s.get("effort") or eff or "default"
+
+
+def _cell_costs(scores: list[dict]) -> dict[tuple, float]:
+    """(base_model, task, rung, effort) -> mean PER-RUN cost_usd over the non-infra, non-sentinel records.
+
+    Majority-vote records carry the SUM over their repeats, so they are skipped: the individual
+    repeats (and non-repeat runs) give the per-run figure."""
+    acc: dict[tuple, list] = defaultdict(list)
+    for s in scores:
+        if _is_sentinel(s) or _is_infra(s) or s.get("repeat_majority"):
+            continue
+        b, e = _base_effort(s)
+        acc[(b, s["task"], s["rung"], e)].append(s.get("cost_usd") or 0)
+    return {k: sum(v) / len(v) for k, v in acc.items()}
+
+
+def model_ratios(records: list[dict]):
+    """Median nominal cost ratio vs sonnet, per other base model, over matched (task, rung, effort) cells.
+
+    Returns {base_model: float | "UNMEASURED"}; UNMEASURED when no cell has both the model and
+    a sonnet run (or sonnet is absent). Sonnet itself is the baseline and is not listed."""
+    costs = _cell_costs(records)
+    models = sorted({k[0] for k in costs})
+    sonnet = {k[1:]: c for k, c in costs.items() if "sonnet" in k[0].lower()}
+    out = {}
+    for m in models:
+        if "sonnet" in m.lower():
+            continue
+        ratios = [c / sonnet[k[1:]] for k, c in costs.items()
+                  if k[0] == m and sonnet.get(k[1:])]
+        out[m] = statistics.median(ratios) if ratios else "UNMEASURED"
+    return out
+
+
+def model_ratios_section(scores: list[dict]) -> list[str]:
+    ratios = model_ratios(scores)
+    if not ratios:
+        return []
+    lines = ["## Model Cost Ratios (nominal, vs sonnet)", ""]
+    for m, r in ratios.items():
+        lines.append(f"- {m}: " + (r if isinstance(r, str) else f"{r:.2f}x"))
+    return lines + [""]
+
+
+def effort_section(scores: list[dict]) -> list[str]:
+    """Paired sign-test across ADJACENT efforts, per layer per base model, over tasks.
+
+    Same convention as the rung pairs: "higher" = the higher effort. Only emitted when some
+    base model ran at 2+ efforts."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_infra(s)]
+    costs = _cell_costs(scores)
+    cell: dict[tuple, dict] = {}
+    for s in scored:
+        b, e = _base_effort(s)
+        if e in EFFORTS:
+            cell.setdefault((b, s["rung"], e), {})[s["task"]] = s
+    lines: list[str] = []
+    for b, rung in sorted({k[:2] for k in cell}, key=lambda k: (k[0], _rung_key(k[1]))):
+        efforts = [e for e in EFFORTS if (b, rung, e) in cell]
+        for lo, hi in zip(efforts, efforts[1:]):
+            lo_c, hi_c = cell[(b, rung, lo)], cell[(b, rung, hi)]
+            shared = sorted(set(lo_c) & set(hi_c))
+            w_hi = sum(1 for t in shared if hi_c[t]["passed"] and not lo_c[t]["passed"])
+            w_lo = sum(1 for t in shared if lo_c[t]["passed"] and not hi_c[t]["passed"])
+            cost = lambda e: sum(costs.get((b, t, rung, e), 0) for t in shared) / len(shared)  # noqa: E731
+            lines.append(f"- {b} @ {_rl(rung)}: **{lo} -> {hi}** higher effort won "
+                         f"{sign_test(w_lo, w_hi, len(shared) - w_hi - w_lo)}"
+                         + (f"; avg cost/run ${cost(lo):.4f} -> ${cost(hi):.4f}" if shared else ""))
+    return ["## Effort Sign-Test (adjacent efforts)", "", *lines, ""] if lines else []
+
+
 LAYER_NAMES = {
     (1, 2): "CLAUDE.md / knowledge routing",
     (2, 3): "memory (behavior instructions)",
@@ -217,7 +431,7 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
 
     Sentinel tasks are excluded from all pass-rate counts and sign-test analysis.
     Individual repeat records are excluded; majority-vote records are used instead."""
-    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_layer_neutral(s)]
     sentinel_count = len({s["task"] for s in scores if _is_sentinel(s)})
 
     lines: list[str] = ["## Verdict — does the setup earn its keep?", ""]
@@ -486,8 +700,102 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
     return lines
 
 
+APPENDIX_REPO_ROOT = Path(__file__).parent.parent
+JUDGE_HEADER = (
+    "## Appendix: LLM judge (quarantined)",
+    "",
+    "_Opus judge scores (0-5) against per-task rubrics. Advisory only: nothing here feeds the "
+    "numbers above. Promotion rule: it may inform decisions only after >=40 decisive human pairs "
+    "over >=2 rounds, judge-vs-human κ >= 0.6, fixture validation >= 90 %, and an unchanged "
+    "`rubric_sha`._",
+    "",
+)
+
+
+def _judge_cells(scores: list[dict]) -> dict:
+    """(task, model, rung) -> (judge score or majority mean, passed) for valid, non-sentinel cells."""
+    cells = {}
+    for s in _effective_scores(scores):
+        if _is_sentinel(s) or _is_infra(s):
+            continue
+        v = s.get("judge_mean") if s.get("repeat_majority") else (s.get("judge") or {}).get("score")
+        if isinstance(v, (int, float)):
+            cells[(s["task"], s.get("model", ""), s["rung"])] = (float(v), bool(s.get("passed")))
+    return cells
+
+
+def _kappa_line(scores: list[dict], root: Path) -> str:
+    """judge-vs-Nate line: calls deck.kappa(picks, judge) when harness/deck.py exists (item 1.6)."""
+    deck = root / "harness" / "deck.py"
+    if not deck.is_file():
+        return "judge-vs-Nate: κ=n/a UNCALIBRATED (no deck)"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("deck", deck)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        picks = []
+        pf = root / "human" / "picks.jsonl"
+        if pf.is_file():
+            picks = [json.loads(ln) for ln in pf.read_text().splitlines() if ln.strip()]
+        judge = {Path(s["file"]).stem: s["judge"]["score"] for s in scores
+                 if isinstance(s.get("judge"), dict) and s.get("file")}
+        res = mod.kappa(picks, judge)
+        k, n = (res.get("kappa"), res.get("n")) if isinstance(res, dict) else (res, None)
+        if not isinstance(k, (int, float)):
+            return "judge-vs-Nate: κ=n/a UNCALIBRATED (no rated pairs)"
+        ok = k >= 0.6 and (n is None or n >= 40)
+        return f"judge-vs-Nate: κ={k:.2f} {'CALIBRATED' if ok else 'UNCALIBRATED'}"
+    except Exception as e:
+        return f"judge-vs-Nate: κ=n/a UNCALIBRATED (deck error: {e})"
+
+
+def judge_appendix(data: dict, root=None) -> list[str]:
+    """Quarantined appendix, rendered last. Reads only judge fields; never alters headline numbers."""
+    scores = data.get("scores", [])
+    root = Path(root) if root else APPENDIX_REPO_ROOT
+    lines = list(JUDGE_HEADER)
+    cells = _judge_cells(scores)
+    leaks = sum(1 for s in scores if isinstance(s.get("judge"), dict) and s["judge"].get("leak"))
+    if not cells:
+        lines += ["_no judged runs in this scorecard (run with `--judge`)_", ""]
+    else:
+        by_rung: dict = defaultdict(list)
+        for (_t, _m, rung), (v, _p) in cells.items():
+            by_rung[rung].append(v)
+        lines += ["| Rung | Mean judge score | N cells |", "|------|------------------|---------|"]
+        for rung in sorted(by_rung, key=_rung_key):
+            vs = by_rung[rung]
+            lines.append(f"| {_rl(rung)} | {sum(vs) / len(vs):.2f} | {len(vs)} |")
+        lines.append("")
+        pairs = select_pairs({r for (_t, _m, r) in cells}, data.get("layer_order"))
+        sep = []
+        for lo, hi in pairs:
+            w = l = ties = 0
+            for (t, m, r), (v, p) in cells.items():
+                if r != lo or (t, m, hi) not in cells:
+                    continue
+                v2, p2 = cells[(t, m, hi)]
+                gap = v2 - v
+                if gap >= 0.5:
+                    w += 1
+                elif gap <= -0.5:
+                    l += 1
+                else:
+                    ties += 1
+                if p == p2 and abs(gap) >= 1.0:
+                    sep.append(f"{t} [{m}] {_rl(lo)} to {_rl(hi)}: {gap:+.1f}")
+            lines.append(f"- judge sign-test {_rl(lo)} vs {_rl(hi)} (gap >= 0.5 = win): higher rung won "
+                         f"{sign_test(l, w, ties)}")
+        lines += ["", f"- check.sh ties the judge separates (|gap| >= 1.0): {len(sep)}"]
+        lines += [f"  - {x}" for x in sorted(sep)]
+    lines += [f"- judge leak count (rationale names a skill, CLAUDE.md or memory): {leaks}", "",
+              _kappa_line(scores, root), ""]
+    return lines
+
+
 def render_markdown(data: dict, stats: dict, token_stats: dict,
-                    matrix_exit=None, planned=None) -> str:
+                    matrix_exit=None, planned=None, history_path=None) -> str:
     all_scores = data["scores"]
     scored = [s for s in _effective_scores(all_scores) if not _is_sentinel(s)]
 
@@ -543,9 +851,14 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
     lines.append(f"| **all** | | | **${grand_total:.4f}** | |")
     lines.append("")
 
+    lines += frontier_section(all_scores)
+    lines += trend_section(all_scores, history_path)
+
     lines += ["## Pass/Fail by Rung", ""]
     by_rung: dict[int, dict] = defaultdict(lambda: {"pass": 0, "fail": 0, "infra": 0})
     for s in scored:
+        if _is_layer_neutral(s):  # bare-only rows would inflate bare's task set in a per-rung comparison
+            continue
         if _is_infra(s):
             by_rung[s["rung"]]["infra"] += 1
         elif s["passed"]:
@@ -579,6 +892,9 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
 
     lines += cross_model_section(all_scores)
 
+    lines += effort_section(all_scores)
+    lines += model_ratios_section(all_scores)
+
     lines += ["## Per-Run Results", ""]
     lines += ["| Task | Rung | Pass | Tokens | Cost |", "|------|------|------|--------|------|"]
     for s in scored:
@@ -590,6 +906,8 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
 
     lines += difficulty_anchors_section(all_scores)
 
+    lines += judge_appendix(data)
+
     return "\n".join(lines) + "\n"
 
 
@@ -599,7 +917,16 @@ def main() -> int:
     parser.add_argument("--matrix-exit", type=int, default=None, help="run_matrix.py exit code")
     parser.add_argument("--planned-runs", type=int, default=None, help="runs run_matrix planned")
     parser.add_argument("--layers", default="", help="layer/rung order for pairing (as given to run.sh)")
+    parser.add_argument("--history-line", action="store_true", help="print this run's history.jsonl line instead of the scorecard")
+    parser.add_argument("--backfill-history", action="store_true", help="regenerate the history file from every scorecards/*.scores.json")
+    parser.add_argument("--history-file", default=str(DEFAULT_HISTORY), help="history.jsonl path (default <repo>/scorecards/history.jsonl)")
+    parser.add_argument("--scorecards-dir", default=str(DEFAULT_HISTORY.parent), help="dir scanned by --backfill-history")
     args = parser.parse_args()
+
+    if args.backfill_history:
+        n = backfill_history(args.scorecards_dir, args.history_file)
+        print(f"stats.py: wrote {n} history lines to {args.history_file}", file=sys.stderr)
+        return 0
 
     raw = Path(args.scores_file).read_text() if args.scores_file else sys.stdin.read()
     try:
@@ -616,12 +943,16 @@ def main() -> int:
         print("stats.py: no scores to analyze", file=sys.stderr)
         return 1
 
+    if args.history_line:
+        print(json.dumps(history_line(data, stamp_of(args.scores_file) if args.scores_file else ""), sort_keys=True))
+        return 0
+
     scored = [s for s in _effective_scores(scores) if not _is_sentinel(s)]
     stats = compute_stats(scored, args.layers.split(",") if args.layers else None)
     token_stats = token_summary(scored)
     if args.layers:
         data["layer_order"] = args.layers.split(",")
-    md = render_markdown(data, stats, token_stats, args.matrix_exit, args.planned_runs)
+    md = render_markdown(data, stats, token_stats, args.matrix_exit, args.planned_runs, args.history_file)
     print(md)
     return 0
 

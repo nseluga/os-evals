@@ -16,3 +16,7 @@
 - Sources, in order: (1) `workspace.ref` with `solution_sha:` -> good = `git archive <solution_sha>`, bad = base `sha:` (`X^` resolved via rev-parse), `setup.sh` run in each; (2) `tests/good/` and `tests/bad/` fixture dirs inside the task dir. For workspace checks they are the workspace contents; for text checks each holds a `transcript.json` (`{"result": "..."}`) fed on stdin exactly as `score.py run_check` does; (3) otherwise UNVALIDATED.
 - A check that cannot be faked cheaply gets `anchor_only: true` at column 0 in `meta.yaml` with a `# validate_checks: <reason>` comment; the script reports it UNVALIDATED.
 - If a fixture fails, fix the fixture only when the fixture was wrong. If the check passes a bad answer or fails a good one, report MISMATCH and fix the check deliberately, never to make the gate green.
+
+## Run History & Frontier
+- **history.jsonl is append-only, last-per-stamp wins**: `run.sh` appends one `stats.py --history-line` JSON line per run to tracked `scorecards/history.jsonl`; readers skip unparseable lines and dedupe by `stamp` (scores filename minus `.scores.json`), last line wins.
+- **Cost/quality from individual rows**: per-run cost/pass figures use individual records (`is_repeat_individual` or non-repeat), never `repeat_majority` rows, whose tokens/cost are summed across repeats. The frontier drops infra and sentinel rows; the history line's `cost_by_model` keeps them (real spend, so a runaway-output commit cannot look cheaper).

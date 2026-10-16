@@ -6,6 +6,8 @@ into ~/os. An eval layer keeps the behavior-shaping parts and rewrites ~/os path
 snapshot root so it reads the snapshot, not live state.
 """
 import copy
+import os
+import pwd
 import re
 
 MEMORY_HOOK_MARK = "memory-relevance-hook"
@@ -31,8 +33,14 @@ def rewrite_paths(value, snap_root):
 
 
 # Claude Code strips CLAUDE_CODE_OAUTH_TOKEN from hook subprocess envs (CLAUDE_CONFIG_DIR survives),
-# so the hook's nested `claude -p` would be "Not logged in". Re-source the layer's rung.env first.
-_ENV_WRAP = 'bash -c \'set -a; . "$CLAUDE_CONFIG_DIR/rung.env"; set +a; exec '
+# so the hook's nested `claude -p` would be "Not logged in". Re-source the layer's rung.env (HOME,
+# CLAUDE_CONFIG_DIR; no token on disk) and re-read the token from the keychain. The hook runs under
+# the isolated HOME, where `security` finds no default keychain, so the real user's login keychain
+# path is baked in (a path, not a secret). pw_dir, not $HOME: HOME may already be isolated here.
+_LOGIN_KEYCHAIN = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, "Library/Keychains/login.keychain-db")
+_ENV_WRAP = ('bash -c \'set -a; . "$CLAUDE_CONFIG_DIR/rung.env"; set +a; '
+             't=$(security find-generic-password -s os-evals-claude-token -w "' + _LOGIN_KEYCHAIN + '" 2>/dev/null); '
+             '[ -n "$t" ] && export CLAUDE_CODE_OAUTH_TOKEN="$t"; exec ')
 
 
 def _wrap_env(cmd):
@@ -57,6 +65,11 @@ def strip_settings(settings, snap_root):
     out = copy.deepcopy(settings)
     for k in DROP_KEYS:
         out.pop(k, None)
+    # Effort is an explicit run axis (--effort); settings must not set it behind the harness's back.
+    out.pop("effortLevel", None)
+    for ms in (out.get("modelSettings") or {}).values():
+        if isinstance(ms, dict):
+            ms.pop("effortLevel", None)
     hooks = memory_hooks_only(out.get("hooks"))
     if hooks:
         out["hooks"] = hooks

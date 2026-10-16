@@ -1,0 +1,9 @@
+{
+  "name": "bcns-mini",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic stand-in for a connector worker, used as an eval fixture.",
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

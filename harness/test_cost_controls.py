@@ -178,6 +178,28 @@ def test_repeat_flag():
         check("--repeat 0 refused", (rc, "must be >= 1" in out), (2, True))
 
 
+def test_effort_axis():
+    check("build_cmd no effort -> no flag", "--effort" in build_cmd("m", [], {}), False)
+    cmd = build_cmd("m", ["--bare"], {}, 1.5, "xhigh")
+    check("build_cmd effort flag", cmd[cmd.index("--effort") + 1], "xhigh")
+    check("efforts are the CLI set (literal)", run_matrix.EFFORTS, ("low", "medium", "high", "xhigh", "max"))
+    import score
+    check("score.EFFORTS == run_matrix.EFFORTS", score.EFFORTS, run_matrix.EFFORTS)
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        rc, out, counts = _dry_run([], tmp)
+        check("default effort high: total", ("total runs: 8" in out, "[effort=high]" in out), (True, True))
+        rc, out, counts = _dry_run(["--effort", "low,high"], tmp)
+        check("two efforts double total", "total runs: 16" in out, True)
+        check("two efforts double estimate counts", counts, {"once": 4, "thrice": 12})
+        check("each task line shows its effort", (out.count("[effort=low]"), out.count("[effort=high]")), (2, 2))
+        for bad in ("turbo", "low,turbo", ""):
+            rc, out, _ = _dry_run(["--effort", bad], tmp)
+            check(f"--effort {bad!r} refused", (rc, "unknown --effort" in out), (2, True))
+        rc, out, _ = _dry_run(["--effort", "max"], tmp)
+        check("max accepted", rc, 0)
+
+
 if __name__ == "__main__":
     test_default_false()
     test_tools_none()
@@ -185,4 +207,5 @@ if __name__ == "__main__":
     test_ws_root()
     test_estimate()
     test_repeat_flag()
+    test_effort_axis()
     print("ALL PASS")

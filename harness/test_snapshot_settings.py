@@ -2,6 +2,8 @@
 
 Run: python3 harness/test_snapshot_settings.py
 """
+import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,9 @@ def test_strip():
     cmd = out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     check("hook path rewritten + env-wrapped", cmd,
           "bash -c 'set -a; . \"$CLAUDE_CONFIG_DIR/rung.env\"; set +a; "
+          "t=$(security find-generic-password -s os-evals-claude-token -w "
+          f"\"{pwd.getpwuid(os.getuid()).pw_dir}/Library/Keychains/login.keychain-db\" 2>/dev/null); "
+          "[ -n \"$t\" ] && export CLAUDE_CODE_OAUTH_TOKEN=\"$t\"; "
           f"exec python3 {SNAP}/scripts/memory-relevance-hook.py'")
     check("timeout kept", out["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"], 15)
     check("memory dir rewritten", out["autoMemoryDirectory"], f"{SNAP}/knowledge/memory")
@@ -60,6 +65,19 @@ def test_strip():
     check("outputStyle kept", out["outputStyle"], "Concise")
     check("input not mutated", "enabledPlugins" in LIVE and len(LIVE["hooks"]) == 5, True)
     check("no live os path left", "/os/" in str(out).replace(SNAP, ""), False)
+
+
+def test_strip_effort():
+    live = {**LIVE, "effortLevel": "medium",
+            "modelSettings": {"opus": {"effortLevel": "high", "other": 1}, "sonnet": {"effortLevel": "low"}, "x": "y"}}
+    out = strip_settings(live, SNAP)
+    check("top-level effortLevel dropped", "effortLevel" in out, False)
+    check("modelSettings effort dropped, rest kept", out["modelSettings"],
+          {"opus": {"other": 1}, "sonnet": {}, "x": "y"})
+    check("model kept", out["model"], "opus")
+    check("input not mutated", live["modelSettings"]["opus"]["effortLevel"], "high")
+    check("full layer carries no effort", "effortLevel" in str(layer_settings("full", live, SNAP)), False)
+    check("no modelSettings ok", "effortLevel" in strip_settings({"effortLevel": "max"}, SNAP), False)
 
 
 def test_layers():
@@ -144,6 +162,7 @@ def test_layer_env():
                 if want_home:
                     want = base / ("home-bare" if layer == "bare" else "home")
                     check(f"HOME value [{layer}]", home[0], f"HOME={want}")
+                check(f"no token on disk [{layer}]", ("TOKEN" in envtxt, "fake-token" in envtxt), (False, False))
                 oct_ = oct((base / layer / "rung.env").stat().st_mode & 0o777)
                 check(f"rung.env mode [{layer}]", oct_, "0o600")
             check("bare flags", (base / "bare" / "rung.flags").read_text().strip(), "--bare")
@@ -159,6 +178,7 @@ def test_layer_env():
 
 if __name__ == "__main__":
     test_strip()
+    test_strip_effort()
     test_layers()
     test_pairs()
     test_cells()

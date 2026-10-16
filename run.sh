@@ -17,7 +17,17 @@ set -euo pipefail
 #   ./run.sh --jobs 4                     # one-shot tasks 4 at a time; multi-turn stay serial
 #   ./run.sh --ws-root /some/dir          # workspace root (default $EVAL_WS_ROOT or /Users/Shared/evalws)
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
+#   ./run.sh --effort low,high            # effort axis (low|medium|high|xhigh|max, default high)
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
+#   ./run.sh --window-usd 100             # usage-window budget for the --dry-run fit verdict (FITS / OVER BY $x)
+#   ./run.sh --resume                     # continue a stopped matrix: no archive, no build, skip cells already run
+#   ./run.sh --judge                      # after the matrix, grade rubric tasks with the Opus judge (appendix only)
+#
+# Auth: the OAuth token lives only in macOS keychain item `os-evals-claude-token` (never on disk);
+# run_matrix reads it once per run and injects CLAUDE_CODE_OAUTH_TOKEN into each claude process
+# (--dry-run needs no token). CLAUDE_CODE_OAUTH_TOKEN already in the environment overrides the
+# keychain read (non-Mac/CI path; the memory hook's nested session still reads the keychain only).
+# Missing both -> run.sh exits 2 before archiving, naming the `security add-generic-password` fix.
 #
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
 # a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
@@ -36,7 +46,7 @@ cd "$SCRIPT_DIR"
 TASKS=""                       # empty => auto-discover (minus print-date/_example)
 LAYERS=""
 MODELS="opus"
-MAX_BUDGET="1.50"
+MAX_BUDGET=""  # unset: run_matrix applies each task's meta.yaml cap, else 1.50
 SHAS=()
 DO_BUILD=1
 DRY_RUN=0
@@ -44,6 +54,10 @@ CLEAN_WS=0
 JOBS=1
 WS_ROOT=""
 REPEAT=""
+EFFORT="high"
+JUDGE=0
+WINDOW_USD="100"
+RESUME=0
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -61,6 +75,10 @@ while [ $# -gt 0 ]; do
         --ws-root) WS_ROOT="$2"; shift 2;;
         --clean-ws) CLEAN_WS=1; shift;;
         --repeat) REPEAT="$2"; shift 2;;
+        --effort) EFFORT="$2"; shift 2;;
+        --window-usd) WINDOW_USD="$2"; shift 2;;
+        --resume) RESUME=1; DO_BUILD=0; shift;;
+        --judge) JUDGE=1; shift;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
@@ -103,7 +121,7 @@ while [ -e "$SCORECARDS_DIR/${STAMP}.md" ] || [ -e "$SCORECARDS_DIR/${STAMP}.sco
     TS="$(date -u +%Y%m%dT%H%M%SZ)"
     STAMP="${TS}-${OS_SHA}"
 done
-echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
+echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  effort=$EFFORT  max-budget-usd=${MAX_BUDGET:-default}${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
 
 # --- Auto-discover tasks if none given (exclude the print-date smoke test) ---
 if [ -z "$TASKS" ]; then
@@ -142,17 +160,37 @@ else
     echo "run.sh: --no-build: reusing existing $CONFIGS_DIR"
 fi
 
-MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget-usd "$MAX_BUDGET"
-    --jobs "$JOBS"
+MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS"
+    --jobs "$JOBS" --effort "$EFFORT"
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
+[ -n "$MAX_BUDGET" ] && MATRIX_ARGS+=(--max-budget-usd "$MAX_BUDGET")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
+MATRIX_ARGS+=(--window-usd "$WINDOW_USD")
+[ "$RESUME" -eq 1 ] && MATRIX_ARGS+=(--resume)
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run
+    DRY_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run)" || { echo "$DRY_OUT"; exit 1; }
+    echo "$DRY_OUT"
+    if [ "$JUDGE" -eq 1 ]; then   # the matrix FITS estimate does not price judge calls: print their count and cap
+        JN=0
+        while IFS= read -r l; do
+            t="${l#  }"; t="${t%%:*}"
+            n="$(sed -E 's/.* = ([0-9]+)( .*)?$/\1/' <<<"$l")"
+            [ -f "$TASKS_DIR/$t/rubric.md" ] && JN=$((JN + n))
+        done < <(echo "$DRY_OUT" | grep -E '^  [^ :]+: .* = [0-9]+( |$)')
+        echo "run.sh: --judge adds up to $JN Opus judge calls (rubric tasks x planned runs), cap \$0.50 each, not in the estimate above"
+    fi
     echo "run.sh: dry run only (nothing invoked, scored, or written to runs/)"
     exit 0
 fi
+
+# --- Token presence (no value read): refuse before the archive step moves anything ---
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || security find-generic-password -s os-evals-claude-token >/dev/null 2>&1 || {
+    echo "run.sh: ERROR no auth token: keychain item os-evals-claude-token missing and CLAUDE_CODE_OAUTH_TOKEN unset;" \
+         "fix: security add-generic-password -a os-evals -s os-evals-claude-token -w <token>" >&2
+    exit 2
+}
 
 # --- Preflight (free dry run): refuse before anything is moved or spent ---
 # Catches an unbuilt snapshot (--no-build after ~/os moved), unknown layers and draft tasks.
@@ -161,15 +199,25 @@ PRE_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry
     echo "run.sh: ERROR preflight failed; nothing was run, moved or scored" >&2
     exit 2
 }
+# A pre-1.8 snapshot only warns in the dry run; refuse it here (its memory hook would have no auth).
+if grep -q 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT"; then
+    grep 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT" >&2
+    echo "run.sh: ERROR pre-1.8 snapshot; nothing was run, moved or scored" >&2
+    exit 2
+fi
 PLANNED="$(echo "$PRE_OUT" | sed -n 's/^total runs: *\([0-9][0-9]*\).*/\1/p' | tail -1)"
 
 mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"
 
 # --- Archive (move, never delete) prior transcripts + workspaces so they are not scored ---
 shopt -s nullglob
-prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.ws)
+prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.judge.jsonl "$RUNS_DIR"/*.ws)
 shopt -u nullglob
-if [ "${#prior[@]}" -gt 0 ]; then
+# runs/superseded/ (stale transcripts a --resume re-ran) belongs to the night it was made in: archive it with the rest.
+[ ! -d "$RUNS_DIR/superseded" ] || prior+=("$RUNS_DIR/superseded")
+if [ "$RESUME" -eq 1 ]; then
+    echo "run.sh: --resume: keeping ${#prior[@]} prior run artifacts in place (no archive, no build)"
+elif [ "${#prior[@]}" -gt 0 ]; then
     ARCHIVE="$RUNS_DIR/archive/$TS"
     mkdir -p "$ARCHIVE"
     mv "${prior[@]}" "$ARCHIVE/"
@@ -194,6 +242,14 @@ if [ "${#produced[@]}" -eq 0 ]; then
     exit 1
 fi
 
+# --- 2b. Optional LLM judge. Before scoring (score.py joins the sidecars) and before any
+# workspace cleanup (the judge reads judge_files: from the workspaces). Never fatal. ---
+if [ "$JUDGE" -eq 1 ]; then
+    echo "run.sh: judging rubric tasks (quarantined appendix)..."
+    python3 "$SCRIPT_DIR/harness/judge.py" --runs-dir "$RUNS_DIR" --tasks-dir "$TASKS_DIR" \
+        --configs-dir "$CONFIGS_DIR" --jobs "$JOBS" || echo "run.sh: WARNING judge exited non-zero; scorecard has partial or no appendix data" >&2
+fi
+
 # --- 3. Score every transcript in runs/ ---
 echo "run.sh: scoring..."
 SCORES_JSON="$SCORECARDS_DIR/${STAMP}.scores.json"
@@ -207,10 +263,14 @@ if [ "$SCORE_RC" -ne 0 ]; then
     FINAL_RC=1
 fi
 
+# --- 3b. Append this run's summary line to the tracked run history (the scorecard's trend table reads it) ---
+python3 "$SCRIPT_DIR/harness/stats.py" --scores-file "$SCORES_JSON" --history-line >> "$SCORECARDS_DIR/history.jsonl" \
+    || echo "run.sh: WARNING could not append scorecards/history.jsonl" >&2
+
 # --- 4. Render the scorecard ---
 echo "run.sh: rendering scorecard..."
 SCORECARD="$SCORECARDS_DIR/${STAMP}.md"
-STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC")
+STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC" --history-file "$SCORECARDS_DIR/history.jsonl")
 [ -n "$PLANNED" ] && STATS_ARGS+=(--planned-runs "$PLANNED")
 if ! python3 "$SCRIPT_DIR/harness/stats.py" "${STATS_ARGS[@]}" > "$SCORECARD"; then
     [ -s "$SCORECARD" ] || rm -f "$SCORECARD"
@@ -225,8 +285,9 @@ if [ "$CLEAN_WS" -eq 1 ] && [ -s "$SCORECARD" ]; then
     python3 - "$RUNS_DIR" <<'PY'
 import json, re, shutil, sys
 from pathlib import Path
-# runs/ holds only this invocation's transcripts (prior ones were archived above).
-for f in Path(sys.argv[1]).glob("*.json"):
+# runs/ holds only this invocation's transcripts (prior ones were archived above), plus runs/superseded/
+# (rate-limited runs a --resume re-ran): their workspaces are cleaned too. runs/archive/ is never read.
+for f in [*Path(sys.argv[1]).glob("*.json"), *Path(sys.argv[1]).glob("superseded/*.json")]:
     try:
         ws = json.loads(f.read_text()).get("_meta", {}).get("workspace_dir", "")
     except ValueError:

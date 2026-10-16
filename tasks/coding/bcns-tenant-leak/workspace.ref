@@ -1,0 +1,13 @@
+# Workspace Reference — bcns-tenant-leak
+
+## Git SHA reference
+```
+repo: bcns-mini
+origin: /Users/nateseluga/os-evals-fixtures/bcns-mini
+sha: 4a8f7409f71715acdcb6b98a74807812cbb41911          # main: read-api.mjs with two planted tenant leaks
+solution_sha: 74b24189ee6e16d2e683b5c0d93d5bffba2a5e94  # branch solution/tenant-leak: both readers routed through scopedQuery
+```
+
+At base: `src/read-api.mjs` has `scopedQuery` (the shared per-client filter, fails closed
+without a clientId). `listJobs` uses it; `searchJobs` ignores clientId entirely;
+`exportJobs` uses `||` instead of `&&`. Plain Node 22 ESM, zero deps, so no setup.sh.
