@@ -57,6 +57,25 @@ def test_prompt_has_no_run_identity():
         check("cmd carries no run identity", any("sonnet" in a for a in judge.judge_cmd()), False)
 
 
+def test_process_prompt_has_no_run_identity():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _task(tmp, meta="category: process\n")
+        run = Path(tmp) / "runs" / "20261002T112834Z_writing-demo_bare_sonnet_r1.json"
+        run.parent.mkdir()
+        run.write_text(json.dumps({"result": "the answer", "_meta": {
+            "task": "writing/demo", "rung": "memory~nohook", "os_sha": "34b1958"}}))
+        cmd = f"HOME={tmp}/configs/34b1958/home-bare ls /Users/Shared/evalws/w-abc1234567/w"
+        run.with_name(run.stem + ".trace.jsonl").write_text("\n".join(json.dumps(e) for e in _ev(
+            ("Bash", {"command": cmd}), ("Skill", {"skill": "ponytail"}),
+            ("Task", {"subagent_type": "dt-qa", "model": "sonnet", "description": "check it"}))))
+        art, _ = judge.artifact_text(run, Path(tmp) / "tasks")
+        prompt = judge.build_judge_prompt((d / "rubric.md").read_text(), art)
+        check("process prompt has digest", "- Agent subagent_type=dt-qa model=sonnet check it" in prompt, True)
+        check("digest keeps skill name", "- Skill ponytail" in prompt, True)
+        for leak in ("home-bare", "w-abc1234567", "evalws", "configs/34b1958", "memory~nohook", run.stem, "ls /"):
+            check(f"process prompt lacks {leak!r}", leak in prompt, False)
+
+
 def test_judge_cmd_flags():
     c = judge.judge_cmd("SYS")
     for flag in ("--bare", "--no-session-persistence", "--json-schema"):
@@ -121,6 +140,20 @@ def test_leak_terms():
     check("clean rationale", judge.leak_terms("Names all three flaws.", skills), [])
 
 
+def test_leak_terms_ignores_terms_in_judged_text():
+    # usage-audit shape: the task prompt itself lists the skills, so a correct answer names them
+    skills = ["dev-team", "dt-qa", "dt-engineer", "quote", "ponytail"]
+    judged = ("<rubric>5: names which of dev-team, dt-qa and dt-review were used</rubric>\n"
+              "<artifact>Used dev-team and dt-qa; the /quote skill never ran. See CLAUDE.md.</artifact>")
+    rat = "Correctly lists dev-team and dt-qa, notes /quote was unused, cites CLAUDE.md."
+    check("terms quoted from the judged text are not leaks", judge.leak_terms(rat, skills, judged), [])
+    check("same rationale without judged text leaks", judge.leak_terms(rat, skills),
+          ["dev-team", "dt-qa", "quote", "claude.md"])
+    check("skill absent from the judged text still leaks",
+          judge.leak_terms("Followed the dt-engineer and ponytail skill.", skills, judged), ["dt-engineer", "ponytail"])
+    check("only the absent term leaks", judge.leak_terms("dev-team plus dt-engineer", skills, judged), ["dt-engineer"])
+
+
 def test_artifact_cap_and_diff():
     with tempfile.TemporaryDirectory() as tmp:
         ws, seed = Path(tmp) / "w", Path(tmp) / "seed"
@@ -158,7 +191,8 @@ def test_agent_equals_task_digest():
     check("Agent and Task digest identical", a, t)
     check("digest line", a.splitlines()[0], "- Agent subagent_type=dt-engineer model=sonnet build it")
     check("prompt body not in digest", "SECRET" in a, False)
-    long = judge.trace_digest(_ev(*[("Bash", {"command": "x" * 100})] * 100))
+    check("bash command text not in digest", judge.trace_digest(_ev(("Bash", {"command": "cat /secret"}))), "- Bash")
+    long = judge.trace_digest(_ev(*[("Bash", {"description": "x" * 100})] * 100))
     check("digest capped", len(long) <= judge.DIGEST_CAP + 30, True)
 
 
@@ -215,10 +249,12 @@ def test_sidecar_roundtrip_and_validate_writes_nothing():
 
 if __name__ == "__main__":
     test_prompt_has_no_run_identity()
+    test_process_prompt_has_no_run_identity()
     test_judge_cmd_flags()
     test_parse_paths()
     test_skip_rules()
     test_leak_terms()
+    test_leak_terms_ignores_terms_in_judged_text()
     test_artifact_cap_and_diff()
     test_agent_equals_task_digest()
     test_process_digest_only_for_process_tasks()

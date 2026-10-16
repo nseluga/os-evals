@@ -115,6 +115,17 @@ def test_appendix_without_deck():
         check("leak count line", "judge leak count" in out and ": 0" in out, True)
 
 
+def test_ties_exclude_pass_fail_split():
+    # D differs by check.sh (pass vs fail) with |gap| = 3: not a check.sh tie, so it must not be counted
+    data = _data()
+    data["scores"] += [_scored("D", "bare", 1, passed=True), _scored("D", "full", 4, passed=False)]
+    with tempfile.TemporaryDirectory() as d:
+        out = "\n".join(stats.judge_appendix(data, root=d))
+    check("pass/fail pair not counted as a separated tie", "separates (|gap| >= 1.0): 2" in out, True)
+    check("pass/fail pair not listed", "D [m]" in out, False)
+    check("tied pairs still listed", "A [m]" in out and "C [m]" in out, True)
+
+
 def test_appendix_no_judged_runs():
     with tempfile.TemporaryDirectory() as d:
         out = "\n".join(stats.judge_appendix(_data(judged=False), root=d))
@@ -181,6 +192,7 @@ if __name__ == "__main__":
     test_judge_jsonl_never_scored()
     test_majority_judge_mean()
     test_appendix_without_deck()
+    test_ties_exclude_pass_fail_split()
     test_appendix_no_judged_runs()
     test_appendix_with_fake_deck()
     test_appendix_deck_failure_still_renders()

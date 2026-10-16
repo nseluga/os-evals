@@ -6,7 +6,7 @@ Judge only the artifact.
 
 ## Scale
 - 5: Identifies the SQL injection as the most serious issue and explains the exploit or consequence and the fix (parameterised query); also identifies the hard-coded secret and the quadratic join with why each matters; ordering reflects severity; adds at least one further real reliability issue (no timeout, unclosed connection, no error handling); no false claims.
-- 4: Names SQL injection prominently, marked most serious, with the correct fix, and at least one of the other two planted issues with a reason (a stated complexity or consequence, or a correct remedy, counts as a reason); a terse but accurate review can earn a 4; may be thin on reliability or ordering.
+- 4: Names SQL injection prominently, marked most serious, with the correct fix, and at least one of the other two planted issues with a reason; may be thin on reliability or ordering.
 - 3: Names SQL injection but gives little explanation and no other issue with a reason, or names the secret and the quadratic loop but treats injection as minor or misses its fix.
 - 2: Identifies only secondary issues (for example only the loop), or lists issues with no reasoning.
 - 1: Generic review advice ("add tests", "improve naming") with no concrete flaw tied to the code.

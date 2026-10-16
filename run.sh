@@ -152,7 +152,16 @@ MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run
+    DRY_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run)" || { echo "$DRY_OUT"; exit 1; }
+    echo "$DRY_OUT"
+    if [ "$JUDGE" -eq 1 ]; then   # the matrix FITS estimate does not price judge calls: print their count and cap
+        JN=0
+        while IFS= read -r l; do
+            t="${l#  }"; t="${t%%:*}"
+            [ -f "$TASKS_DIR/$t/rubric.md" ] && JN=$((JN + ${l##*= }))
+        done < <(echo "$DRY_OUT" | grep -E '^  [^ :]+: .* = [0-9]+$')
+        echo "run.sh: --judge adds up to $JN Opus judge calls (rubric tasks x planned runs), cap \$0.50 each, not in the estimate above"
+    fi
     echo "run.sh: dry run only (nothing invoked, scored, or written to runs/)"
     exit 0
 fi

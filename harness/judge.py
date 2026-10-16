@@ -90,7 +90,7 @@ def trace_digest(events: list) -> str:
         for k in ("subagent_type", "model"):
             if inp.get(k):
                 parts.append(f"{k}={inp[k]}")
-        desc = inp.get("description") or inp.get("skill") or inp.get("command") or ""
+        desc = inp.get("description") or inp.get("skill") or ""
         if desc:
             parts.append(str(desc).replace("\n", " ")[:120])
         lines.append("- " + " ".join(parts))
@@ -243,20 +243,21 @@ def skill_names(configs_dir: Path, os_sha: str) -> list[str]:
     return sorted(p.name for p in d.iterdir() if p.is_dir() and not p.name.startswith("_")) if d.is_dir() else []
 
 
-def leak_terms(rationale: str, skills: list[str]) -> list[str]:
+def leak_terms(rationale: str, skills: list[str], judged: str = "") -> list[str]:
     """Terms in a rationale that hint the judge knew the setup: skill names, CLAUDE.md, 'my memory'.
     Hyphenated skill names match as words; plain-word names (quote, map, ...) only as `/name` or
-    next to the word 'skill', since they are ordinary English otherwise."""
+    next to the word 'skill', since they are ordinary English otherwise. `judged` is the text the
+    judge was shown (rubric + artifact): a term it already contains is quoting, not leaking."""
     # ponytail: substring heuristic for plain-word skill names — upgrade when the leak count shows false negatives
-    low = rationale.lower()
+    low, seen = rationale.lower(), judged.lower()
     hits = []
     for s in skills:
         n = re.escape(s.lower())
         pat = rf"(?<![\w-]){n}(?![\w-])" if "-" in s else rf"/{n}\b|\b{n} skill\b|\bskill {n}\b"
-        if re.search(pat, low):
+        if re.search(pat, low) and not re.search(pat, seen):
             hits.append(s)
     for term in ("claude.md", "my memory"):
-        if term in low:
+        if term in low and term not in seen:
             hits.append(term)
     return hits
 
@@ -308,10 +309,12 @@ def judge_run(run_file: Path, tasks_dir: Path, configs_dir: Path, os_sha: str = 
         return why
     sha = latest_sha(configs_dir, os_sha or meta.get("os_sha", ""))
     art, truncated = artifact_text(run_file, tasks_dir)
-    res = call_judge(build_judge_prompt((task_dir / "rubric.md").read_text(), art), configs_dir, sha)
+    rubric = (task_dir / "rubric.md").read_text()
+    res = call_judge(build_judge_prompt(rubric, art), configs_dir, sha)
     entry = {"ts": datetime.now(timezone.utc).isoformat(), "rubric_sha": rubric_sha(task_dir),
              "model": JUDGE_MODEL, "effort": JUDGE_EFFORT, "score": res["score"],
-             "rationale": res["rationale"], "leak": leak_terms(res["rationale"], skill_names(configs_dir, sha)),
+             "rationale": res["rationale"],
+             "leak": leak_terms(res["rationale"], skill_names(configs_dir, sha), rubric + "\n" + art),
              "truncated": truncated, "cost_usd": res["cost_usd"]}
     with open(side, "a") as f:
         f.write(json.dumps(entry) + "\n")
