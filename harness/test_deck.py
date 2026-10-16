@@ -320,11 +320,18 @@ def test_artifact_normalization():
         check("no digest untouched", deck._artifact(run, td), "no digest here")
     finally:
         deck.artifact_text = orig
-    # a real build hands real run files to the provider: rater text is the run's result
+    # a real build hands real run files to the provider: each side contains its own run's result
+    # (substring, not prefix: judge.artifact_text puts a "## Final response" header in front)
     with tempfile.TemporaryDirectory() as tmp:
         fx = Fixture(tmp, ntasks=6)
-        _, dk, _ = fx.build(n=4)
-        assert dk and all(p["A"].startswith("Widget answer") and p["B"].startswith("Widget answer") for p in dk), dk
+        _, dk, key = fx.build(n=4)
+        said = {stem: f"Widget answer {int(task[-2:])} version {rung[:1]}{k}."
+                for (task, rung, k), stem in fx.stems.items()}
+        assert dk, dk
+        for p in dk:
+            for side in ("A", "B"):
+                want = said[key[p["id"]]["stems"][side]]
+                assert want in p[side], (side, want, p[side])
     # local equivalent reads judge_files, diffs against seed/
     if not hasattr(deck, "_judge_files"):  # item 1.5's judge.artifact_text is in use
         return
