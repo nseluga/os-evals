@@ -121,19 +121,27 @@ def _crow(task, model, cost, rung="bare", effort="high", passed=True, **kw):
 
 
 def test_model_ratios_and_effort_section():
-    rows = [_crow("a", "sonnet", 1.0), _crow("b", "sonnet", 2.0), _crow("a", "opus", 2.0), _crow("b", "opus", 6.0),
+    # opus/sonnet ratios 2, 3, 10: median 3, mean 5 (a median->mean mutant must fail)
+    rows = [_crow("a", "sonnet", 1.0), _crow("b", "sonnet", 2.0), _crow("c", "sonnet", 1.0),
+            _crow("a", "opus", 2.0), _crow("b", "opus", 6.0), _crow("c", "opus", 10.0),
             _crow("a", "haiku", 0.5, effort="low")]  # haiku only at a different effort -> unmatched
     r = stats.model_ratios(rows)
-    check("median ratio over matched cells", r["opus"], 2.5)
+    check("median ratio over matched cells", r["opus"], 3.0)
     check("no matched cell -> UNMEASURED", r["haiku"], "UNMEASURED")
     check("sonnet not listed", "sonnet" in r, False)
     check("no sonnet at all -> UNMEASURED", stats.model_ratios([_crow("a", "opus", 2.0)]), {"opus": "UNMEASURED"})
     check("infra/sentinel excluded", stats.model_ratios(rows + [_crow("c", "opus", 99, infra_error=True)]), r)
+    # repeat-3 cell: 3 individuals (1.0 each) + majority record carrying the SUM (3.0); opus is repeat-1 at 2.0
+    rep3 = [_crow("a", "sonnet", 1.0, is_repeat_individual=True, repeat_index=i, repeat_total=3) for i in (1, 2, 3)]
+    rep3.append(_crow("a", "sonnet", 3.0, repeat_majority=True, repeat_total=3))
+    check("repeat-3 cell is per-run, not summed", stats.model_ratios(rep3 + [_crow("a", "opus", 2.0)]), {"opus": 2.0})
+    rep3[-1]["infra_error"] = True  # majority flagged infra must not hide valid individuals
+    check("per-run cost uses individuals", stats.model_ratios(rep3 + [_crow("a", "opus", 2.0)]), {"opus": 2.0})
     old = [{"task": "a", "rung": "bare", "model": "sonnet", "passed": True, "cost_usd": 1.0},
            {"task": "a", "rung": "bare", "model": "opus", "passed": True, "cost_usd": 3.0}]
     check("old records (no effort) match as default", stats.model_ratios(old), {"opus": 3.0})
     md = "\n".join(stats.model_ratios_section(rows))
-    check("section prints UNMEASURED", "- haiku: UNMEASURED" in md and "- opus: 2.50x" in md, True)
+    check("section prints UNMEASURED", "- haiku: UNMEASURED" in md and "- opus: 3.00x" in md, True)
 
     # effort sign-test: low fails b, high passes both; medium in the middle
     rows = [_crow("a", "sonnet", 1, effort="low"), _crow("b", "sonnet", 1, effort="low", passed=False),
@@ -145,6 +153,11 @@ def test_model_ratios_and_effort_section():
           (True, True, False))
     check("medium->high: high won 1/1", "medium -> high** higher effort won 1/1 (ties=1)" in body, True)
     check("low->medium: n/a-free tie", "low -> medium** higher effort won n/a (no discriminating tasks)" in body, True)
+    rp = []
+    for e, c in (("low", 1), ("high", 2)):
+        rp += [_crow("a", "sonnet", c, effort=e, is_repeat_individual=True, repeat_index=i, repeat_total=3) for i in (1, 2, 3)]
+        rp.append(_crow("a", "sonnet", 3 * c, effort=e, repeat_majority=True, repeat_total=3))
+    check("effort avg cost is per run", "avg cost/run $1.0000 -> $2.0000" in "\n".join(stats.effort_section(rp)), True)
     check("single effort -> no section", stats.effort_section([_crow("a", "sonnet", 1)]), [])
     check("default-effort records ignored", stats.effort_section(
         [_crow("a", "sonnet", 1, effort="default"), _crow("a", "sonnet", 1)]), [])

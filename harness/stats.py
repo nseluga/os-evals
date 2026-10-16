@@ -179,10 +179,13 @@ def _base_effort(s: dict) -> tuple[str, str]:
 
 
 def _cell_costs(scores: list[dict]) -> dict[tuple, float]:
-    """(base_model, task, rung, effort) -> mean cost_usd over the non-infra, non-sentinel records."""
+    """(base_model, task, rung, effort) -> mean PER-RUN cost_usd over the non-infra, non-sentinel records.
+
+    Majority-vote records carry the SUM over their repeats, so they are skipped: the individual
+    repeats (and non-repeat runs) give the per-run figure."""
     acc: dict[tuple, list] = defaultdict(list)
-    for s in _effective_scores(scores):
-        if _is_sentinel(s) or _is_infra(s):
+    for s in scores:
+        if _is_sentinel(s) or _is_infra(s) or s.get("repeat_majority"):
             continue
         b, e = _base_effort(s)
         acc[(b, s["task"], s["rung"], e)].append(s.get("cost_usd") or 0)
@@ -223,6 +226,7 @@ def effort_section(scores: list[dict]) -> list[str]:
     Same convention as the rung pairs: "higher" = the higher effort. Only emitted when some
     base model ran at 2+ efforts."""
     scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_infra(s)]
+    costs = _cell_costs(scores)
     cell: dict[tuple, dict] = {}
     for s in scored:
         b, e = _base_effort(s)
@@ -236,10 +240,10 @@ def effort_section(scores: list[dict]) -> list[str]:
             shared = sorted(set(lo_c) & set(hi_c))
             w_hi = sum(1 for t in shared if hi_c[t]["passed"] and not lo_c[t]["passed"])
             w_lo = sum(1 for t in shared if lo_c[t]["passed"] and not hi_c[t]["passed"])
-            cost = lambda c: sum(c[t].get("cost_usd") or 0 for t in shared) / len(shared)  # noqa: E731
+            cost = lambda e: sum(costs.get((b, t, rung, e), 0) for t in shared) / len(shared)  # noqa: E731
             lines.append(f"- {b} @ {_rl(rung)}: **{lo} -> {hi}** higher effort won "
                          f"{sign_test(w_lo, w_hi, len(shared) - w_hi - w_lo)}"
-                         + (f"; avg cost ${cost(lo_c):.4f} -> ${cost(hi_c):.4f}" if shared else ""))
+                         + (f"; avg cost/run ${cost(lo):.4f} -> ${cost(hi):.4f}" if shared else ""))
     return ["## Effort Sign-Test (adjacent efforts)", "", *lines, ""] if lines else []
 
 

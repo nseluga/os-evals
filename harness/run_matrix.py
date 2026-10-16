@@ -821,7 +821,7 @@ def main() -> int:
             env_vars, flags = load_rung(configs_dir, layer, sha)
             env = redact_env(env_vars)
             print(f"command [{label}]: claude -p --output-format stream-json --verbose --model <model> {' '.join(flags)} "
-                  f"--effort {','.join(efforts)} --max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
+                  f"--effort <effort> --max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
             print(f"  env: {env}")
             print(f"  HOME: {env.get('HOME', '(real HOME, not isolated)')}")
             gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars))))

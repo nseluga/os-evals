@@ -69,7 +69,7 @@ def test_load_rung_missing():
                 raise AssertionError(f"load_rung did not raise for missing layer {layer!r}")
 
 
-def _run_one(stdout, timed_out=False):
+def _run_one(stdout, timed_out=False, info=None, **kw_run):
     import subprocess as sp
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
@@ -78,6 +78,8 @@ def _run_one(stdout, timed_out=False):
         (d / "configs" / "bare").mkdir(parents=True)
 
         def fake(cmd, **kw):
+            if info is not None:
+                info["cmd"] = cmd
             if timed_out:
                 raise sp.TimeoutExpired(cmd, 1, output=stdout)
             return types.SimpleNamespace(stdout=stdout, stderr="", returncode=0)
@@ -86,9 +88,11 @@ def _run_one(stdout, timed_out=False):
         sp.run = fake
         try:
             out = run_matrix.run_one("t", "bare", "m", d / "tasks", d / "configs", d / "runs",
-                                     ws_root=d / "ws")
+                                     ws_root=d / "ws", **kw_run)
         finally:
             sp.run = orig
+        if info is not None:
+            info["name"] = out.name
         tr = out.with_name(out.name.removesuffix(".json") + ".trace.jsonl")
         return json.loads(out.read_text()), (tr.read_text() if tr.exists() else "")
 
@@ -106,9 +110,25 @@ def test_meta_no_result_and_trace():
     check("timeout -> no_result False", t["_meta"]["no_result"], False)
 
 
+def test_effort_in_run_id_and_meta():
+    init = '{"type":"system","subtype":"init","model":"claude-haiku-9-9"}\n'
+    res = '{"type":"result","is_error":false,"result":"ok","usage":{"output_tokens":3}}\n'
+    info = {}
+    t, _ = _run_one(init + res, info=info, effort="xhigh")
+    check("run file name ends _m_xhigh.json", info["name"].endswith("_bare_m_xhigh.json"), True)
+    check("cmd carries --effort xhigh", info["cmd"][info["cmd"].index("--effort") + 1], "xhigh")
+    check("_meta.effort", t["_meta"]["effort"], "xhigh")
+    check("_meta.model_resolved from init event", t["_meta"]["model_resolved"], "claude-haiku-9-9")
+    info = {}
+    t, _ = _run_one(res, info=info)
+    check("default effort high in name", info["name"].endswith("_bare_m_high.json"), True)
+    check("no init event -> model_resolved None", t["_meta"]["model_resolved"], None)
+
+
 if __name__ == "__main__":
     test_parser_survives_junk()
     test_guards()
     test_load_rung_missing()
     test_meta_no_result_and_trace()
+    test_effort_in_run_id_and_meta()
     print("ALL PASS")
