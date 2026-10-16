@@ -56,6 +56,8 @@ DEFAULT_WS_ROOT = "/Users/Shared/evalws"
 KNOWN_LAYERS = ("bare", "claude-md", "memory", "skills", "full")
 REPO_ROOT = Path(__file__).parent.parent
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # the CLI's --effort set
+NOHOOK_BASES = ("memory", "skills", "full")  # the layers whose settings.json wires the memory hook
+KO_BASES = ("skills", "full")  # the layers with a skills/ symlink
 
 
 KEYCHAIN_ITEM = "os-evals-claude-token"
@@ -401,8 +403,45 @@ def _ensure_git_repo(ws_dir: Path) -> None:
     )
 
 
+def parse_layer(spec) -> tuple[str, str]:
+    """'<base>~<mod>' -> (base, mod); a plain layer -> (layer, '')."""
+    base, _, mod = str(spec).partition("~")
+    return base, mod
+
+
+def variant_error(layers: list, configs_dir: Path, shas: list) -> str | None:
+    """First problem with the knockout variants in `layers` (None if fine). Pure: run_matrix exits 2 on it."""
+    for spec in layers:
+        base, mod = parse_layer(spec)
+        if not mod:
+            continue
+        if base not in KNOWN_LAYERS:
+            return f"unknown layer {base!r} in {spec!r}"
+        if base not in layers:
+            return f"variant {spec!r} needs its base {base!r} in --layers too (the pair is the comparison)"
+        if mod == "nohook":
+            if base not in NOHOOK_BASES:
+                return f"{spec!r}: nohook needs a base with the memory hook ({', '.join(NOHOOK_BASES)}), not {base!r}"
+        elif mod.startswith("ko.") and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", mod[3:]):
+            if base not in KO_BASES:
+                return f"{spec!r}: ko.<skill> needs a base with skills ({', '.join(KO_BASES)}), not {base!r}"
+            for sha in shas:
+                if not (configs_dir / sha / "src" / "skills" / mod[3:]).exists():
+                    return f"{spec!r}: no skill {mod[3:]!r} in {configs_dir / sha / 'src' / 'skills'}"
+        else:
+            return f"unknown variant {mod!r} in {spec!r}; known: nohook, ko.<skill>"
+    return None
+
+
+def variant_applies(spec, curated_skill: str) -> bool:
+    """ko.<skill> runs only on tasks whose curated_skill (first token; 'none (…)' -> 'none') is that skill."""
+    mod = parse_layer(spec)[1]
+    return not mod.startswith("ko.") or (curated_skill.split() or [""])[0] == mod[3:]
+
+
 def rung_dir(configs_dir: Path, layer, os_sha: str = "") -> Path:
-    """configs/<sha>/<layer>/ (configs/<layer>/ if no sha): the layer's template config dir."""
+    """configs/<sha>/<layer>/ (configs/<layer>/ if no sha): the layer's template config dir (a variant uses its base's)."""
+    layer = parse_layer(layer)[0]
     return configs_dir / os_sha / str(layer) if os_sha else configs_dir / str(layer)
 
 
@@ -412,7 +451,7 @@ RUN_CONFIG_LINKS = ("skills", "agents", "output-styles")
 STALE_TOKEN_LINES = ("CLAUDE_CODE_OAUTH_TOKEN=", "ANTHROPIC_AUTH_TOKEN=")
 
 
-def build_run_config(template: Path, cfg: Path) -> None:
+def build_run_config(template: Path, cfg: Path, mod: str | None = None) -> None:
     """(Re)create cfg as a fresh per-run CLAUDE_CONFIG_DIR from the layer template.
 
     Allowlist only: the static config files are copied and the skills/agents/output-styles
@@ -420,17 +459,35 @@ def build_run_config(template: Path, cfg: Path) -> None:
     config dir (projects/*.jsonl transcripts, sessions/, backups/, .claude.json, ...) and
     rung.flags stay behind, so no run sees another run's answers. rung.env is rewritten with
     CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for HOME/config
-    dir (the token comes from the keychain, never this file), and its nested session must stay per-run."""
+    dir (the token comes from the keychain, never this file), and its nested session must stay per-run.
+
+    `mod` is a knockout variant: "nohook" drops `hooks` from settings.json; "ko.<skill>" swaps the skills
+    symlink for a directory of per-skill symlinks without <skill>."""
     import shutil
+    ko = mod[3:] if mod and mod.startswith("ko.") else None
+    if mod and mod != "nohook" and ko is None:
+        raise ValueError(f"unknown variant {mod!r}")
     shutil.rmtree(cfg, ignore_errors=True)
     cfg.mkdir(parents=True)
     for name in RUN_CONFIG_FILES:
         if (template / name).is_file():
             shutil.copy2(template / name, cfg / name)
+    if mod == "nohook" and (cfg / "settings.json").is_file():
+        st = json.loads((cfg / "settings.json").read_text())
+        st.pop("hooks", None)
+        (cfg / "settings.json").write_text(json.dumps(st, indent=2))
     for name in RUN_CONFIG_LINKS:
         if (template / name).is_symlink():
-            target = os.readlink(template / name)
-            os.symlink(os.path.join(template, target), cfg / name)  # join is a no-op for an absolute target
+            target = os.path.join(template, os.readlink(template / name))  # join is a no-op for an absolute target
+            if ko is not None and name == "skills":
+                (cfg / name).mkdir()
+                for entry in sorted(os.listdir(target)):
+                    if entry != ko:
+                        os.symlink(os.path.join(target, entry), cfg / name / entry)
+            else:
+                os.symlink(target, cfg / name)
+        elif ko is not None and name == "skills":
+            raise ValueError(f"ko.{ko}: {template} has no skills symlink")
     env_file = template / "rung.env"
     if env_file.is_file():
         lines = [ln for ln in env_file.read_text().splitlines() if not ln.startswith(("CLAUDE_CONFIG_DIR=", *STALE_TOKEN_LINES))]
@@ -512,6 +569,7 @@ def run_one(
 
     `rung` is the label recorded in _meta (default: the layer name)."""
     rung = layer if rung is None else rung
+    layer, mod = parse_layer(layer)  # `layer` may be a '<base>~<mod>' spec; everything below keys off the base
     task_dir = tasks_dir / task
     prompt_file = task_dir / "prompt.md"
     if not prompt_file.exists():
@@ -552,7 +610,7 @@ def run_one(
     cfg_dir = run_dir / "cfg"
     template_dir = rung_dir(configs_dir, layer, os_sha)
     run_dir.mkdir(parents=True, exist_ok=True)
-    build_run_config(template_dir, cfg_dir)
+    build_run_config(template_dir, cfg_dir, mod or None)
     env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
     has_ref = (task_dir / "workspace.ref").exists()
     has_seed = (task_dir / "seed").is_dir()
@@ -590,7 +648,7 @@ def run_one(
             # A retry must not inherit files the failed attempt wrote: rebuild w/ and cfg/.
             import shutil
             shutil.rmtree(ws_dir, ignore_errors=True)
-            build_run_config(template_dir, cfg_dir)
+            build_run_config(template_dir, cfg_dir, mod or None)
             if has_ref or has_seed:
                 restore_workspace(task_dir, ws_dir)
             else:
@@ -661,6 +719,7 @@ def run_one(
         "task": task,
         "rung": rung,
         "layer": str(layer),
+        "variant": mod or "",
         "os_sha": os_sha,
         "model": model,
         "effort": effort,
@@ -827,16 +886,20 @@ def main() -> int:
         if skipped:
             print(f"excluded (default: false; name in --tasks to run): {', '.join(skipped)}")
     layers = [l for l in args.layers.split(",") if l]
-    bad = [l for l in layers if l not in KNOWN_LAYERS]
+    bad = [l for l in layers if parse_layer(l)[0] not in KNOWN_LAYERS]
     if bad:
         print(f"run_matrix: ERROR unknown layer(s) {bad}; known: {', '.join(KNOWN_LAYERS)}", file=sys.stderr)
+        return 2
+    shas = args.os_sha or [""]
+    verr = variant_error(layers, configs_dir, shas)
+    if verr:
+        print(f"run_matrix: ERROR {verr}", file=sys.stderr)
         return 2
     drafts = [t for t in tasks if t and any(seg.startswith("_") for seg in Path(t).parts)]
     if drafts:
         print(f"run_matrix: ERROR task {drafts[0]!r} is a draft (path component starts with '_'); "
               "drafts must be promoted out of _draft first", file=sys.stderr)
         return 2
-    shas = args.os_sha or [""]
     cells = plan_cells(layers, shas)
     models = args.models.split(",")
 
@@ -858,7 +921,8 @@ def main() -> int:
     plan = []
     for task in tasks:
         task_meta = read_task_meta(tasks_dir / task)
-        task_cells = [c for c in cells if c[0] == "bare" or not task_meta["sentinel"]]
+        task_cells = [c for c in cells if (c[0] == "bare" or not task_meta["sentinel"])
+                      and variant_applies(c[0], task_meta["curated_skill"])]
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
         plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
@@ -869,7 +933,8 @@ def main() -> int:
         print(f"matrix ({len(tasks)} tasks x {len(cells)} cells x {len(models)} models x {ne} efforts):")
         for task, tc, rep in plan:
             for effort in efforts:
-                print(f"  {task}: {len(tc)} cells x {len(models)} models x {rep} repeat = {len(tc) * len(models) * rep}  [effort={effort}]")
+                print(f"  {task}: {len(tc)} cells x {len(models)} models x {rep} repeat = {len(tc) * len(models) * rep}  [effort={effort}]"
+                      + (f"  cells={[c[2] for c in tc]}" if any("~" in c[2] for c in tc) else ""))
         for layer, sha, label in cells:
             env_vars, flags = load_rung(configs_dir, layer, sha)
             env = redact_env(env_vars)

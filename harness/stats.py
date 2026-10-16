@@ -37,7 +37,7 @@ def _rung_key(r):
     """Sort key: legacy ints first, then layers in ladder order, then anything else by name."""
     if isinstance(r, int):
         return (0, r, "")
-    base = str(r).split("@")[0]
+    base = str(r).split("@")[0].split("~")[0]  # a knockout variant sorts with its base
     return (1, LADDER.index(base) if base in LADDER else len(LADDER), str(r))
 
 
@@ -47,10 +47,17 @@ def select_pairs(rungs, order=None) -> list[tuple]:
     Legacy int rungs keep RUNG_PAIRS. Layer names: A/B (`full@A`, `full@B`) pairs the two
     shas in the order given. Otherwise adjacent entries of the ORDER THE USER PASSED are
     paired, wherever they sit in the full ladder (`bare,skills` -> [(bare, skills)]); with
-    no order, ladder order is used. Fewer than two layers -> []."""
+    no order, ladder order is used. Fewer than two layers -> [].
+
+    A knockout variant `<base>~<mod>` whose base is present is not part of the ladder; it adds one
+    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep)."""
     present = set(rungs)
     if present and all(isinstance(r, int) for r in present):
         return [(lo, hi) for lo, hi in RUNG_PAIRS if lo in present and hi in present]
+    var = sorted((r for r in present if "~" in str(r) and str(r).split("~")[0] in present), key=_rung_key)
+    if var:
+        rest = select_pairs(present - set(var), [r for r in order or [] if r not in var] or None)
+        return rest + [(v, v.split("~")[0]) for v in var]
     given = list(dict.fromkeys(r for r in (order or []) if r in present))
     ab = [r for r in given if "@" in str(r)]
     if len(ab) < 2:
