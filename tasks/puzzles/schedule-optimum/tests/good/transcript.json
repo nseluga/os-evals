@@ -1,0 +1,3 @@
+{
+ "result": "Lower bounds: load 18, optimum found by search is 19.\n\nJ1: M2 @ 10\nJ2: M1 @ 15\nJ3: M1 @ 7\nJ4: M1 @ 0\nJ5: M2 @ 7\nJ6: M2 @ 0\nJ7: M1 @ 17\nJ8: M2 @ 4\nmakespan=19"
+}
