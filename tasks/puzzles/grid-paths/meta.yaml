@@ -25,4 +25,4 @@ description: |
   answer in check.sh is for seed 7 only; changing the seed means updating check.sh.
 
   Check: text-only, reads {"result": ...} on stdin; takes the value after the last
-  "ANSWER:" (bold/commas tolerated), else the last integer in the reply. 0 right, 1 wrong.
+  "answer" (bold/commas tolerated), else the last integer in the reply. 0 right, 1 wrong.
