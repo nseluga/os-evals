@@ -12,13 +12,14 @@ source: authored for round 3 (plan item A1) against the bcns-mini fixture repo, 
 description: |
   Add a new connector (Crewlog, a crew time-tracking SaaS) to a small multi-source
   integration repo. The prompt is a product-style request with a payload sample and the
-  normalized record contract; it does not list the places a source must be registered or
-  the payload quirks. Finding those is the test.
+  normalized record contract; it names each payload quirk's input condition (null status,
+  numeric id, decimal total, offset timestamp, auth header) but not how to handle it, and
+  does not list the places a source must be registered. Finding those is the test.
 
   Hidden traps: a source must be registered in three places that a base test requires to
   agree (SOURCES in src/index.mjs, ALLOWED_SOURCES in scripts/add-source.mjs, the source
   enum in api/contract.json); `total` is a decimal string that must round half up to
-  cents (1234.565 -> 123457); `crewStatus` can be null; `jobRef` is numeric but the
+  cents (1234.565 -> 123457, 1.005 -> 101; float math gives 100); `crewStatus` can be null; `jobRef` is numeric but the
   record id is a string; `day` must be the calendar day in the row's own timezone, not
   UTC (22:30 -08:00 on 1 Mar is 2 Mar in UTC); the Bearer token must be redacted from
   `raw`. src/helpers.mjs already has minor, localDay and redact for exactly these.

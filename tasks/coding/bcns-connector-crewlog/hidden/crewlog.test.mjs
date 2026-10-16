@@ -49,6 +49,7 @@ test('decimal string total rounds half up to integer cents', () => {
   assert.strictEqual(norm({ total: '1234.565' }).amount_cents, 123457);
   assert.strictEqual(norm({ total: '80' }).amount_cents, 8000);
   assert.strictEqual(norm({ total: '420.5' }).amount_cents, 42050);
+  assert.strictEqual(norm({ total: '1.005' }).amount_cents, 101); // float math gives 100
   assert.strictEqual(norm({ total: '0.004' }).amount_cents, 0);
 });
 
@@ -73,7 +74,6 @@ test('Bearer token is redacted everywhere in the record', () => {
   const s = JSON.stringify(j);
   assert.ok(!s.includes('crw_9f8e7d6c5b4a3210'), 'bearer token leaked');
   assert.ok(!s.includes('9f8e7d6c'), 'bearer token fragment leaked');
-  if (j.raw.authHeader !== undefined) assert.match(j.raw.authHeader, /\[REDACTED\]/);
   // raw keeps the other original fields
   assert.equal(j.raw.jobRef, 7001);
   assert.equal(j.raw.crewId, 'c-9');

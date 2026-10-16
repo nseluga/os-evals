@@ -22,15 +22,16 @@ A Crewlog job row looks like this:
 
 - `jobRef` is a number, `crewStatus` can be `null`, and `total` is a decimal string
   in dollars.
-- `startedAt` is an ISO timestamp with a UTC offset; `tz` is the crew's IANA timezone.
+- `startedAt` is an ISO timestamp with a UTC offset; `tz` is the crew's IANA timezone;
+  `day` is the calendar day the job started in the crew's timezone.
 - `authHeader` is the credential the sync used for that row.
 - The connector is configured per client with a `crewId`; it fetches that crew's rows
-  (use an hard-coded fixture like the other connectors, no real HTTP).
+  (use a hard-coded fixture like the other connectors, no real HTTP).
 
-Each connector's `normalize(raw)` returns the job record the rest of the product
-consumes: `id`, `client_id`, `source`, `title`, `status`, `amount_cents`, `day`
-(YYYY-MM-DD) and `raw` (the original row). Crewlog rows have to come out in that same
-shape.
+Each connector's `normalize(raw)` returns a new job record, leaving the row it's given
+unchanged, that the rest of the product consumes: `id`, `client_id`, `source`, `title`,
+`status`, `amount_cents`, `day` (YYYY-MM-DD) and `raw` (the original row, which is stored
+and served by the read API). Crewlog rows have to come out in that same shape.
 
 Add tests for the new connector alongside the existing ones, and make sure the whole
 suite passes with `npm test`.
