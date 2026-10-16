@@ -11,6 +11,7 @@ Run: python3 harness/test_score_infra.py
 """
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -168,7 +169,25 @@ def test_score_run_exports_run_trace_and_layer_neutral():
         check("layer_neutral defaults False", score.read_task_meta(tasks, "nope")["layer_neutral"], False)
 
 
+def test_validate_marker_not_inherited():
+    # An operator-shell OS_EVALS_VALIDATE=1 must not reach check.sh: it would rebuild .git from the
+    # model-written fixture.sh (running model code). gh-merge-live with .git removed must just fail rc 1.
+    tasks = Path(__file__).resolve().parent.parent / "tasks"
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d) / "ws"
+        shutil.copytree(tasks / "process/gh-merge-live/tests/good", ws)
+        shutil.rmtree(ws / ".git", ignore_errors=True)
+        os.environ["OS_EVALS_VALIDATE"] = "1"
+        try:
+            _, _, rc = score.run_check("process/gh-merge-live", "{}", tasks, str(ws))
+        finally:
+            del os.environ["OS_EVALS_VALIDATE"]
+        check("OS_EVALS_VALIDATE in caller env -> rc 1", rc, 1)
+        check("fixture.sh did not run (no .git rebuilt)", (ws / ".git").exists(), False)
+
+
 if __name__ == "__main__":
+    test_validate_marker_not_inherited()
     test_trace_file_export()
     test_score_run_exports_run_trace_and_layer_neutral()
     test_majority_ignores_infra()

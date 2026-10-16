@@ -156,6 +156,7 @@ def run_check(
     if workspace_dir:
         env["WORKSPACE_DIR"] = workspace_dir
     env.pop("TRACE_FILE", None)  # never inherit a stray value from the caller's shell
+    env.pop("OS_EVALS_VALIDATE", None)  # validate-only marker: a real run must never enable fixture rebuilds
     if trace_file and Path(trace_file).is_file():
         env["TRACE_FILE"] = str(trace_file)
 
