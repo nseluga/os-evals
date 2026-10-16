@@ -1,0 +1,30 @@
+category: writing
+gate: capability
+default: true
+contaminated: true
+group: knowledge-informed
+curated_skill: humanizer
+tools: none  # text-only rewrite; no tools so the run cannot read the disk or send mail
+timeout_sec: 600
+max_budget_usd: 0.75
+description: |
+  A rewrite task: turn an AI-sounding client email (Harbor Lane Dental, Google Workspace
+  integration) into something a real person at a small consultancy would send.
+
+  The draft is stuffed with em dashes, "I hope this email finds you well", "delve",
+  "leverage", "seamlessly", "robust", and three apologies. It buries, in paragraph four,
+  a $540/year Google verification fee due Oct 30, and hides that a free manual-approval
+  path exists (the prompt's internal note says so).
+
+  What is rewarded: plain contractions, one soft ask, moderate politeness, at most one
+  apology, a "Best,"-style sign-off, no AI vocabulary, every fact kept, and (rubric)
+  leading with the decision the client must make and recommending the free path first.
+
+  Flagged knowledge-informed and contaminated: the behavior comes from Nate's voice
+  memories (email voice, moderate politeness; flag paid fees and lead with the free path)
+  and the humanizer skill, so a bare run is not expected to match them. The prompt names
+  every fact needed, so the answer itself is not in the library.
+
+  Check type: text-only floor (check.sh). Quality above the floor is judged by rubric.md.
+
+STATUS: two-sided validated (tests/good, tests/bad)
