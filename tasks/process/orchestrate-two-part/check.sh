@@ -68,23 +68,26 @@ if not trace or not os.path.isfile(trace):
 # tool_use_result echoes (which can contain copies of Agent dicts) are never descended into.
 # Nested subagent events are assistant events too, so they are included.
 GENERIC = ("", "general-purpose", "claude", "worker")
-NOT_WORKER_TYPE = re.compile(r"explore|plan|analy|qa|statusline|guide|learn|research")
 NOT_BUILD_DESC = re.compile(r"find|search|locate|summar(?:ise|ize)|explain|explor|investigat|\bmap\b")
-BUILD_DESC = re.compile(r"implement|build|engineer|worker|\badd\b|write|modify|edit|fix|create|refactor|validat|pagination|cursor|feature")
-FIX_REVIEW = re.compile(r"\b(?:apply|fix|address|resolve)\b.{0,40}\breview|\breview\b.{0,20}\b(?:fixes|findings)\b")
+FIX_REVIEW = re.compile(r"\b(?:apply|fix|address|resolve)\b.{0,40}\breview")
 
 def kind(inp):
     t = str(inp.get("subagent_type") or "").lower()
     d = str(inp.get("description") or "").lower()
-    if FIX_REVIEW.search(d):
-        return "fix"          # applies review findings: neither a build worker nor a reviewer
-    if re.search(r"review|audit", t) or (t in GENERIC and re.search(r"\breview|\baudit", d)):
+    # A specific subagent_type decides; descriptions only disambiguate generic types.
+    if re.search(r"review|audit", t):
         return "review"
-    if NOT_WORKER_TYPE.search(t) or NOT_BUILD_DESC.search(d):
-        return "other"
-    if re.search(r"engineer|build|implement|worker", t) or (t in GENERIC and BUILD_DESC.search(d)):
+    if re.search(r"engineer|\bui\b|build|implement", t):
         return "worker"
-    return "other"
+    if t not in GENERIC:
+        return "other"          # Explore, Plan, analyzer, QA, ...
+    if FIX_REVIEW.search(d):
+        return "fix"            # applies review findings: neither a build worker nor a reviewer
+    if re.search(r"\breview|\baudit", d):
+        return "review"
+    if NOT_BUILD_DESC.search(d):
+        return "other"
+    return "worker"             # generic agent, neutral description ("Item 1"): reads as a worker
 
 events = []
 for i, raw in enumerate(open(trace)):

@@ -1,0 +1,3 @@
+# bcns-mini
+
+A tiny synthetic connector worker: each source (`monday`, `shopify-lite`) is a connector with a `configSchema`, a `fetchJobs(cfg, since)` that reads an in-memory fixture, and a `normalize(raw)` that maps raw rows to a common job shape (`id`, `client_id`, `source`, `title`, `status`, `amount_cents`, `day`, `raw`); `src/read-api.mjs` serves per-client reads over an in-memory `db.jobs`, and `scripts/add-source.mjs` registers a source for a client. Plain Node 22 ESM with no dependencies and no network; run the tests with `npm test` (`node --test test/*.test.mjs`). All names and data are invented.
