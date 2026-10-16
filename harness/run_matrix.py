@@ -16,7 +16,8 @@ Inputs:
   --layers comma-separated layers (default: bare,full)
   --os-sha os sha built by build_configs.sh (repeatable; default: the only dir in configs/)
   --models comma-separated model IDs or aliases (default: opus)
-  --max-budget-usd per-run spend cap passed to the CLI (default: 1.50)
+  --max-budget-usd per-run spend cap passed to the CLI; wins over any meta.yaml max_budget_usd
+                   (unset: each task's meta.yaml cap, else 1.50)
   --dry-run print the matrix + command per layer (token redacted) and exit; runs nothing
   --config-dir path to configs/ (default: <repo>/configs)
   --tasks-dir  path to tasks/ (default: <repo>/tasks)
@@ -34,6 +35,8 @@ Inputs:
 
 meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
 default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
+max_budget_usd (per-task cap, used only when --max-budget-usd is not given), layer_neutral (bare only, kept in the frontier),
+judge_files / signals (passed through to _meta).
 """
 
 import argparse
@@ -170,7 +173,8 @@ def read_task_meta(task_dir: Path) -> dict:
                      that skill actually fired (routing check).
     """
     out = {"timeout_sec": 1800, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
-           "default": True, "tools": ""}
+           "default": True, "tools": "", "layer_neutral": False, "max_budget_usd": None,
+           "judge_files": "", "signals": ""}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -195,6 +199,16 @@ def read_task_meta(task_dir: Path) -> dict:
             out["curated_skill"] = s.split(":", 1)[1].split("(")[0].split("#")[0].strip()
         elif s.startswith("sentinel:"):
             out["sentinel"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("layer_neutral:"):
+            out["layer_neutral"] = s.split(":", 1)[1].strip().lower().startswith("true")
+        elif s.startswith("max_budget_usd:"):  # per-task cap, overrides the CLI default (C1 needs 6)
+            try:
+                out["max_budget_usd"] = float(s.split(":", 1)[1].split("#", 1)[0].strip())
+            except ValueError:
+                pass
+        elif s.startswith(("judge_files:", "signals:")):  # passed through to _meta; other items parse them
+            k, v = s.split(":", 1)
+            out[k] = v.split(" #", 1)[0].strip().strip("'\"")
         elif s.startswith("default:"):
             out["default"] = not s.split(":", 1)[1].split("#", 1)[0].strip().lower().startswith("false")
         elif s.startswith("tools:"):
@@ -290,7 +304,7 @@ def detect_skill_fired(events: list[dict], intended_skill: str):
         if needle in name.lower():
             return True
         # Orchestrators fan out to dt-* specialists via Task sub-agents.
-        if name == "Task":
+        if name in ("Task", "Agent"):  # the spawn tool is named Agent in current CLIs
             blob = f"{inp.get('subagent_type', '')} {inp.get('description', '')}".lower()
             if needle in blob:
                 return True
@@ -543,6 +557,17 @@ def is_pre18_snapshot(template: Path) -> bool:
     return "memory-relevance-hook" in s and KEYCHAIN_ITEM not in s
 
 
+DEFAULT_MAX_BUDGET_USD = 1.50
+
+
+def effective_budget(cli: float | None, task_meta: dict) -> float:
+    """Per-run cap: an explicit --max-budget-usd wins, else the task's meta.yaml value, else 1.50."""
+    if cli is not None:
+        return cli
+    meta = task_meta.get("max_budget_usd")
+    return DEFAULT_MAX_BUDGET_USD if meta is None else meta
+
+
 def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
               max_budget_usd: float | None = None, effort: str | None = None) -> list[str]:
     """argv for one claude run (pure; run_one adds cwd/env/stdin)."""
@@ -552,8 +577,7 @@ def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
         cmd.extend(["--effort", effort])
     if task_meta.get("tools") == "none":
         cmd.extend(["--tools", ""])
-    if max_budget_usd is not None:
-        cmd.extend(["--max-budget-usd", str(max_budget_usd)])
+    cmd.extend(["--max-budget-usd", str(effective_budget(max_budget_usd, task_meta))])
     cmd.extend(["--dangerously-skip-permissions"])
     return cmd
 
@@ -711,7 +735,7 @@ def run_one(
 
     elapsed_sec = round(time.monotonic() - _t0, 1)
 
-    skill_fired = detect_skill_fired(events, intended_skill) if multi_turn else None
+    skill_fired = detect_skill_fired(events, intended_skill)  # None when the task has no curated_skill
     isolated = "HOME" in env_vars
     forbidden, allowed, tilde_root = contamination_rules(
         REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(run_dir), isolated,
@@ -745,6 +769,9 @@ def run_one(
         "no_result": no_result,
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
+        "layer_neutral": task_meta["layer_neutral"],
+        "judge_files": task_meta["judge_files"],
+        "signals": task_meta["signals"],
         "auth_error": auth_error,
         "rate_limited": rate_limited,
         "num_events": len(events),
@@ -862,7 +889,7 @@ def main() -> int:
     parser.add_argument("--layers", default="bare,full")
     parser.add_argument("--os-sha", action="append", default=[])
     parser.add_argument("--models", default="opus")
-    parser.add_argument("--max-budget-usd", type=float, default=1.50)
+    parser.add_argument("--max-budget-usd", type=float, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--config-dir", default=str(REPO_ROOT / "configs"))
     parser.add_argument("--tasks-dir", default=str(REPO_ROOT / "tasks"))
@@ -935,6 +962,10 @@ def main() -> int:
                       and variant_applies(c[0], task_meta["curated_skill"])]
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
+        if task_meta["layer_neutral"]:  # bare only like a sentinel, but kept in the frontier/cost tables
+            task_cells = [c for c in task_cells if c[0] == "bare"]
+            print(f"  layer_neutral: {task} — bare layer only" if task_cells
+                  else f"  layer_neutral: {task} — skipped (0 cells, bare not in --layers)")
         plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
 
     if args.dry_run:
@@ -949,7 +980,7 @@ def main() -> int:
             env_vars, flags = load_rung(configs_dir, layer, sha)
             env = redact_env(env_vars)
             print(f"command [{label}]: claude -p --output-format stream-json --verbose --model <model> {' '.join(flags)} "
-                  f"--effort <effort> --max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
+                  f"--effort <effort> --max-budget-usd {effective_budget(args.max_budget_usd, {})} --dangerously-skip-permissions")
             print(f"  env: {env}")
             print(f"  HOME: {env.get('HOME', '(real HOME, not isolated)')}")
             gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars))))
@@ -959,6 +990,10 @@ def main() -> int:
         no_tools = sorted(t for t, m in metas.items() if m["tools"] == "none")
         if no_tools:
             print(f'--tools "" added for: {", ".join(no_tools)}')
+        base_cap = effective_budget(args.max_budget_usd, {})
+        for t, m in metas.items():
+            if effective_budget(args.max_budget_usd, m) != base_cap:
+                print(f"max_budget_usd: {t} — {effective_budget(args.max_budget_usd, m)} (meta.yaml)")
         counts = {t: len(tc) * len(models) * len(efforts) * rep for t, tc, rep in plan}
         history = load_history(REPO_ROOT / "scorecards")
         est = estimate_cost(history, counts,

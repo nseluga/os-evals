@@ -7,7 +7,7 @@ multi_turn: true  # restored workspace is a git repo (worktrees possible) and ru
 tools: default
 timeout_sec: 2400
 repeat: 1
-max_budget_usd: 6  # not read by the harness yet (item 1.7)
+max_budget_usd: 6  # per-task cap; overrides the run_matrix CLI default
 judge_files: "src/read-api.mjs,scripts/add-source.mjs,test/*.test.mjs"
 signals: worker-models,reviewer-model,parallel-spawns,worktree,visible-split-line  # non-gating; check.sh prints signal:<name>=<value> to stderr
 source: authored fixture (bcns-mini, branch solution/two-part)
@@ -39,9 +39,9 @@ description: |
        (judged by subagent_type and description, not prompt; find/search/summarise-style
        descriptions do not count) and at least 1 reviewer spawn in a later turn
        (message.id order) than the second worker. A later worker whose description applies
-       review findings is allowed and ignored. This check is SKIPPED when TRACE_FILE is unset or
-       missing (until the harness exports it, only checks 1-2 gate).
-    Exit 2 only for infra (WORKSPACE_DIR unset/missing, node/npm/python3 absent).
+       review findings is allowed and ignored. score.py exports TRACE_FILE for every run; the
+       check is SKIPPED when TRACE_FILE is unset and exits 2 when it is set but missing.
+    Exit 2 only for infra (WORKSPACE_DIR unset/missing, TRACE_FILE set but missing, node/npm/python3 absent).
 
   Non-gating signals (printed to stderr as signal:<name>=<value>): worker-models,
   reviewer-model, parallel-spawns (2+ worker spawns sharing one message.id), worktree
@@ -55,4 +55,4 @@ description: |
   bad = zero spawns (inline build); bad2 = review before the last worker; bad3 = base
   untouched + good trace (fails on tests); bad4 = the only post-worker spawn is a fixer
   ("Apply review fixes"), no reviewer; bad5 = two general-purpose "Find/Locate" explorers
-  + a reviewer (no build workers). Note validate_checks.sh does not feed these traces yet.
+  + a reviewer (no build workers). validate_checks.sh runs every one of them as a workspace with TRACE_FILE set.

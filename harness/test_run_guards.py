@@ -276,7 +276,96 @@ def test_effort_in_run_id_and_meta():
     check("no init event -> model_resolved None", t["_meta"]["model_resolved"], None)
 
 
+def test_task_budget_override_and_passthrough():
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d) / "t"
+        t.mkdir()
+        (t / "meta.yaml").write_text(
+            "max_budget_usd: 6  # C1\nlayer_neutral: true\nsignals: a,b  # non-gating\n"
+            'judge_files: "src/x.mjs,test/*.test.mjs"\ndescription: |\n  max_budget_usd: 99\n  layer_neutral: false\n')
+        m = run_matrix.read_task_meta(t)
+        check("max_budget_usd parsed, indented prose ignored", m["max_budget_usd"], 6.0)
+        check("layer_neutral parsed", m["layer_neutral"], True)
+        check("signals passed through, comment stripped", m["signals"], "a,b")
+        check("judge_files passed through, quotes stripped", m["judge_files"], "src/x.mjs,test/*.test.mjs")
+        check("defaults when absent", run_matrix.read_task_meta(Path(d) / "none")["max_budget_usd"], None)
+    cap = lambda cmd: cmd[cmd.index("--max-budget-usd") + 1]  # noqa: E731
+    check("explicit CLI cap beats meta", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, 0.5)), "0.5")
+    check("meta cap applies when no CLI cap", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, None)), "6.0")
+    check("no CLI cap, no meta -> 1.50", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": None}, None)), "1.5")
+    info = {}
+    _run_one('{"type":"result","is_error":false,"result":"ok"}\n', info=info)
+    check("run_one with neither cap -> 1.50", cap(info["cmd"]), "1.5")
+
+
+def test_budget_dry_run_effective_cap():
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        (Path(d) / "tasks" / "big").mkdir()
+        (Path(d) / "tasks" / "big" / "prompt.md").write_text("hi")
+        (Path(d) / "tasks" / "big" / "meta.yaml").write_text("max_budget_usd: 6\n")
+        out = _cli(*base, "--tasks", "ok,big", "--layers", "bare").stdout
+        check("no CLI cap: command line shows the 1.5 default", "--max-budget-usd 1.5 " in out, True)
+        check("no CLI cap: meta task listed with its cap", "max_budget_usd: big \u2014 6.0 (meta.yaml)" in out, True)
+        check("no CLI cap: plain task not listed", "max_budget_usd: ok" in out, False)
+        out = _cli(*base, "--tasks", "ok,big", "--layers", "bare", "--max-budget-usd", "0.5").stdout
+        check("explicit CLI cap shown", "--max-budget-usd 0.5 " in out, True)
+        check("explicit CLI cap: meta not listed (it loses)", "max_budget_usd: big" in out, False)
+
+
+def test_skill_fired_agent_and_one_shot():
+    ev = [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Agent", "input": {"subagent_type": "dt-engineer", "description": "x"}}]}}]
+    check("Agent spawn naming the skill counts", run_matrix.detect_skill_fired(ev, "dt-engineer"), True)
+    check("Task spawn still counts", run_matrix.detect_skill_fired(
+        [{"message": {"content": [{"type": "tool_use", "name": "Task", "input": {"subagent_type": "dt-qa"}}]}}], "dt-qa"), True)
+    check("no match -> False", run_matrix.detect_skill_fired(ev, "ponytail"), False)
+    check("no curated skill -> None", run_matrix.detect_skill_fired(ev, ""), None)
+    # one-shot (multi_turn false) run with a curated_skill still gets skill_fired computed
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "tasks" / "t").mkdir(parents=True)
+        (d / "tasks" / "t" / "prompt.md").write_text("hi")
+        (d / "tasks" / "t" / "meta.yaml").write_text("curated_skill: dt-engineer\nlayer_neutral: true\n")
+        (d / "configs" / "bare").mkdir(parents=True)
+        out = json.dumps(ev[0]) + '\n{"type":"result","is_error":false,"result":"ok"}\n'
+        import subprocess as sp
+        orig = sp.run
+        sp.run = lambda cmd, **kw: types.SimpleNamespace(stdout=out, stderr="", returncode=0)
+        try:
+            f = run_matrix.run_one("t", "bare", "m", d / "tasks", d / "configs", d / "runs", ws_root=d / "ws")
+        finally:
+            sp.run = orig
+        meta = json.loads(f.read_text())["_meta"]
+        check("one-shot run: skill_fired computed", (meta["multi_turn"], meta["skill_fired"]), (False, True))
+        check("_meta.layer_neutral", meta["layer_neutral"], True)
+
+
+def test_layer_neutral_bare_only_dry_run():
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        (Path(d) / "configs" / "full").mkdir()
+        for name, meta in (("ln", "layer_neutral: true\n"), ("sent", "sentinel: true\n"), ("ok", "")):
+            (Path(d) / "tasks" / name).mkdir(exist_ok=True)
+            (Path(d) / "tasks" / name / "prompt.md").write_text("hi")
+            (Path(d) / "tasks" / name / "meta.yaml").write_text(meta)
+        r = _cli(*base, "--tasks", "ln,sent,ok", "--layers", "bare,full")
+        check("exit 0", r.returncode, 0)
+        out = r.stdout
+        check("layer_neutral listed on bare only", "layer_neutral: ln \u2014 bare layer only" in out, True)
+        check("ln plans 1 cell", "  ln: 1 cells" in out, True)
+        check("sentinel still bare only", "sentinel: sent \u2014 bare layer only" in out and "  sent: 1 cells" in out, True)
+        check("normal task keeps both cells", "  ok: 2 cells" in out, True)
+        out = _cli(*base, "--tasks", "ln,ok", "--layers", "full").stdout
+        check("layer_neutral with bare excluded says skipped", "layer_neutral: ln \u2014 skipped (0 cells, bare not in --layers)" in out, True)
+        check("...and plans 0 cells", "  ln: 0 cells" in out, True)
+
+
 if __name__ == "__main__":
+    test_task_budget_override_and_passthrough()
+    test_budget_dry_run_effective_cap()
+    test_skill_fired_agent_and_one_shot()
+    test_layer_neutral_bare_only_dry_run()
     test_parser_survives_junk()
     test_guards()
     test_variant_guards()

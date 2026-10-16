@@ -124,7 +124,34 @@ def test_action_flag_needs_no_majority_for_higher_rung():
     check("1 hi / 1 lo (<3 decisive) -> no flag", _flag(1, 1), False)
 
 
+def test_layer_neutral_excluded_from_verdicts_kept_in_costs():
+    rows = []
+    for t in ("a", "b", "c"):  # three decisive tasks where the higher rung wins
+        rows += [_s(t, 1, False), _s(t, 2, True)]
+    ln = [{**_s("puz", r, True), "layer_neutral": True, "cost_usd": 1.0} for r in (1, 2)]
+    check("sign test ignores layer_neutral rows",
+          stats.compute_stats(rows + ln)["rung_pairs"], stats.compute_stats(rows)["rung_pairs"])
+    verdict = "\n".join(stats.verdict_section({}, rows + ln))
+    check("verdict has no layer_neutral task", "puz" in verdict, False)
+    check("token/cost table keeps layer_neutral", stats.token_summary(rows + ln)["rung1"]["total_cost"], 1.0)
+    check("frontier keeps layer_neutral", sum(c["n"] for c in stats.frontier_cells(rows + ln).values()), 8)
+
+
+def test_layer_neutral_excluded_from_per_rung_pass_counts():
+    data = _fixture()
+    base_md = stats.render_markdown(data, stats.compute_stats(data["scores"]), stats.token_summary(data["scores"]))
+    base_hist = stats.history_line(data)["rungs"]
+    data["scores"].append({**_s("LN", 1, True), "layer_neutral": True, "cost_usd": 1.0})  # bare-only row
+    md = stats.render_markdown(data, stats.compute_stats(data["scores"]), stats.token_summary(data["scores"]))
+    check("Pass/Fail by Rung table unchanged by a layer_neutral row", md.split("## Pass/Fail by Rung")[1].split("##")[0],
+          base_md.split("## Pass/Fail by Rung")[1].split("##")[0])
+    check("history rung counts unchanged", stats.history_line(data)["rungs"], base_hist)
+    check("per-run results still list it", "| LN | rung1 |" in md, True)
+
+
 if __name__ == "__main__":
+    test_layer_neutral_excluded_from_per_rung_pass_counts()
+    test_layer_neutral_excluded_from_verdicts_kept_in_costs()
     test_token_summary_excludes_infra()
     test_sign_test_excludes_x()
     test_no_flip_prune_regressed_for_x()

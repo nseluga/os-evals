@@ -26,12 +26,10 @@ description: |
   (fixed generous ceiling; the plan said <= 2x the bare median, the harness may replace
   the constant later; turns are counted per distinct message id).
 
-  TRACE_FILE dependency: the harness does NOT export TRACE_FILE yet (harness item 1.7 wires
-  it). Until then only the redact gate (npm test + hidden test) fires; the no-spawn and
-  turn-ceiling checks are skipped for real runs. When TRACE_FILE is set, the trace is read
-  from it (set but missing = exit 2); when unset, check.sh reads $WORKSPACE_DIR/trace.jsonl
-  only for fixture paths (*/tests/*, */os-evals-validate/*), because validate_checks.sh does
-  not feed traces yet; a real run workspace is model-writable and is never read for a trace.
+  TRACE_FILE: score.py exports it (runs/<stem>.trace.jsonl) and validate_checks.sh exports each
+  fixture's trace.jsonl. The trace is read from $TRACE_FILE only (set but missing = exit 2;
+  unset = the no-spawn and turn-ceiling checks are skipped). The model-writable workspace is
+  never read for a trace.
 
   Fixtures: tests/good = solution workspace + 3-turn trace; tests/bad = solution workspace
   + trace with an Agent spawn (dt-engineer), must fail though the code is right;
