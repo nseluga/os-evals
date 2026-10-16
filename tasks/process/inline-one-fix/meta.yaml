@@ -26,11 +26,12 @@ description: |
   (fixed generous ceiling; the plan said <= 2x the bare median, the harness may replace
   the constant later; turns are counted per distinct message id).
 
-  TRACE_FILE dependency: the trace checks read the stream-json trace at $TRACE_FILE, which
-  the harness will export into check.sh. If TRACE_FILE is unset or missing, the trace
-  checks are skipped and only the workspace checks run. Fixtures: validate_checks.sh does
-  not yet feed tests/<side>/trace.jsonl, so check.sh also falls back to $WORKSPACE_DIR/
-  trace.jsonl when TRACE_FILE is unset (a real run workspace has no such file).
+  TRACE_FILE dependency: the harness does NOT export TRACE_FILE yet (harness item 1.7 wires
+  it). Until then only the redact gate (npm test + hidden test) fires; the no-spawn and
+  turn-ceiling checks are skipped for real runs. When TRACE_FILE is set, the trace is read
+  from it (set but missing = exit 2); when unset, check.sh reads $WORKSPACE_DIR/trace.jsonl
+  only for fixture paths (*/tests/*, */os-evals-validate/*), because validate_checks.sh does
+  not feed traces yet; a real run workspace is model-writable and is never read for a trace.
 
   Fixtures: tests/good = solution workspace + 3-turn trace; tests/bad = solution workspace
   + trace with an Agent spawn (dt-engineer), must fail though the code is right;

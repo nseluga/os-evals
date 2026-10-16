@@ -5,8 +5,8 @@ set -uo pipefail
 #           no Agent/Task spawn and <= MAX_TURNS assistant turns.
 # FAIL (1): any of the above fails.
 # EXIT 2: WORKSPACE_DIR unset/missing, or infra problem (no node, no test dir).
-# Trace: $TRACE_FILE (stream-json) if set and present; else $WORKSPACE_DIR/trace.jsonl
-# (validate fixtures only); else the trace checks are skipped.
+# Trace: $TRACE_FILE (stream-json); set but missing -> exit 2. Unset -> $WORKSPACE_DIR/trace.jsonl only
+# for fixture paths (*/tests/*, */os-evals-validate/*); otherwise the trace checks are skipped.
 # Needs node and python3. Reads (ignores) the transcript JSON on stdin.
 
 TASK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,8 +21,16 @@ fi
 [ -d "$WS/test" ] && [ -f "$WS/package.json" ] || { echo "FAIL: workspace is not bcns-mini" >&2; exit 2; }
 command -v node >/dev/null && command -v python3 >/dev/null || { echo "FAIL: node/python3 missing" >&2; exit 2; }
 
-TRACE="${TRACE_FILE:-}"
-if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then TRACE=""; [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl"; fi
+TRACE=""
+if [ -n "${TRACE_FILE:-}" ]; then
+    [ -f "$TRACE_FILE" ] || { echo "FAIL: TRACE_FILE set but missing: $TRACE_FILE" >&2; exit 2; }
+    TRACE="$TRACE_FILE"
+else
+    # Fixture fallback only (validate_checks.sh): a model-writable workspace must never feed the trace.
+    case "$WS" in
+        */tests/*|*/os-evals-validate/*) [ -f "$WS/trace.jsonl" ] && TRACE="$WS/trace.jsonl" ;;
+    esac
+fi
 
 # (1) the workspace's own tests
 if ! (cd "$WS" && npm test >/dev/null 2>&1); then
