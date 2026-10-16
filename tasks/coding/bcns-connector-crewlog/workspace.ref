@@ -1,0 +1,11 @@
+# Workspace Reference — bcns-connector-crewlog
+
+## Git SHA reference
+```
+repo: bcns-mini
+origin: /Users/nateseluga/os-evals-fixtures/bcns-mini
+sha: 4a8f7409f71715acdcb6b98a74807812cbb41911        # base: monday + shopify-lite connectors, no crewlog
+solution_sha: d0e0407c6eab419028a676ecd1b3f82388fc3099  # branch solution/connector-crewlog, for validate_checks
+```
+Node 22, ESM, zero dependencies: no setup.sh needed. `npm test` runs
+`node --test test/*.test.mjs`.

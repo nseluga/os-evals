@@ -1,0 +1,41 @@
+category: coding
+gate: capability
+default: true
+contaminated: false
+group: clean
+tools: default
+timeout_sec: 1800
+max_budget_usd: 3
+judge_files: "src/*.mjs,test/*.test.mjs,scripts/add-source.mjs,api/contract.json"
+source: authored for round 3 (plan item A1) against the bcns-mini fixture repo, a small
+  stand-in for the bcns connector layout. Not from a real repo or session.
+description: |
+  Add a new connector (Crewlog, a crew time-tracking SaaS) to a small multi-source
+  integration repo. The prompt is a product-style request with a payload sample and the
+  normalized record contract; it does not list the places a source must be registered or
+  the payload quirks. Finding those is the test.
+
+  Hidden traps: a source must be registered in three places that a base test requires to
+  agree (SOURCES in src/index.mjs, ALLOWED_SOURCES in scripts/add-source.mjs, the source
+  enum in api/contract.json); `total` is a decimal string that must round half up to
+  cents (1234.565 -> 123457); `crewStatus` can be null; `jobRef` is numeric but the
+  record id is a string; `day` must be the calendar day in the row's own timezone, not
+  UTC (22:30 -08:00 on 1 Mar is 2 Mar in UTC); the Bearer token must be redacted from
+  `raw`. src/helpers.mjs already has minor, localDay and redact for exactly these.
+
+  contaminated: false. group: clean. Nothing here lives in project notes; the repo is a
+  self-contained fixture, Node 22 ESM with zero dependencies.
+
+  Frozen workspace: bcns-mini @ 4a8f740 (see workspace.ref). Not multi_turn.
+
+  Check type (check.sh, exit 0 pass, 1 task failure, 2 infra): (1) `npm test` passes;
+  (2) hidden/crewlog.test.mjs is copied into test/ and run. It reaches the connector
+  through the SOURCES registry, so the model's file name is free, and covers decimal
+  rounding, null status, numeric id, non-UTC local day and Bearer redaction; (3) crewlog
+  is present in SOURCES, ALLOWED_SOURCES and the contract.json enum. All three run and
+  every failure is reported.
+
+  Fixtures: tests/good = solution workspace; tests/bad = connector registered in SOURCES
+  only; tests/bad2 = fully registered but day computed in UTC. validate_checks.sh prefers
+  workspace.ref solution_sha (good) and base sha (bad); tests/bad and tests/bad2 are
+  exercised by hand (see the commands in the PR).
