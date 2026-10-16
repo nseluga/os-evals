@@ -6,6 +6,7 @@ curated_skill: quote
 timeout_sec: 900
 max_budget_usd: 1.50
 # tools: default (not none) -- the run must be able to read the seed folder and write the quote file
+tools: default
 # judge_files: the written quote file(s) a judge should read alongside the transcript
 judge_files: "*.md"
 description: |
@@ -23,15 +24,19 @@ description: |
 
   check.sh (workspace check, reads WORKSPACE_DIR): pass iff the deliverable (transcript result
   text plus any .md/.txt/.html written to the workspace, excluding the seed file) has $200 near
-  /mo or per month, $5,000 and $300, no stale $250/month, $3,000 Standard, hourly or Standard
-  tier (negation-aware per sentence, so "no hourly billing" is fine), at least 7 of 10 section
-  cues, and no "Nate"/"Seluga". Exit 2 if WORKSPACE_DIR is unset or missing.
+  /mo or per month, $5,000 and $300, no stale $3,000, $250, hourly (incl. /hr, an hour, by the hour) or
+  Standard/Advanced tier. A stale mention is forgiven only in a sentence that explicitly disowns
+  it (retired, out of date, older quote/file, July, ...) or negates the term directly
+  ("not by the hour", "no hourly"). $5,000 also accepts $5k, 5,000 USD, five thousand. At least 7
+  of 10 section cues counted on heading lines only (prose mentions do not count), and no
+  "Nate"/"Seluga". Exit 2 if WORKSPACE_DIR is unset or missing.
 
   validate_checks.sh note: for a check that reads WORKSPACE_DIR the script feeds an empty
   result on stdin and copies tests/good or tests/bad as the workspace, so the good/bad fixtures
-  carry the quote as a written .md file. Each fixture also ships a transcript.json with the same
-  quote as the result text, to exercise the stdin path by hand:
-  WORKSPACE_DIR=<empty dir> tests/<x>/transcript.json -> same verdict.
+  carry the quote as a written .md file. Each fixture also ships a transcript.json whose result is
+  the same quote preceded by a one-line reply note, to exercise the stdin path by hand:
+  WORKSPACE_DIR=<empty dir> check.sh < tests/<x>/transcript.json -> same verdict. The extra
+  fixtures (good2, bad2, bad3) are transcript-only and are run by hand, not by the validator.
 
   Judged separately via rubric.md (structure, sign-off, sensible defaults, seat-term handling);
   the floor above is only the objective part.

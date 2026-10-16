@@ -44,19 +44,25 @@ if not lc.strip():
 fails = []
 
 # --- required pricing ---
-if not re.search(r"\$\s?200(?:\.00)?\b[^\n]{0,30}?(/\s?mo|per month|a month|monthly)", lc):
+lines = lc.splitlines()
+if not any(re.search(r"\$\s?200(?:\.00)?\b", l) and re.search(r"/\s?mo\b|/\s?month|\bmonth|\bmonthly\b", l) for l in lines):
     fails.append("missing $200 with /mo or per month")
-if not re.search(r"\$\s?5,?000\b", lc):
+if not re.search(r"\$\s?5,?000\b|\$\s?5k\b|\b5,?000\s?(usd|dollars)\b|\bfive thousand\b", lc):
     fails.append("missing $5,000")
 if not re.search(r"\$\s?300\b", lc):
     fails.append("missing $300")
 
-# --- stale pricing (sentence-level; sentences that disown it are fine) ---
-DISOWN = re.compile(r"\b(retired|no longer|not|no|never|instead|stale|outdated|superseded|without|don't|doesn't|isn't)\b|n't\b")
+# --- stale pricing (sentence-level; only sentences that disown it explicitly are fine) ---
+DISOWN = re.compile(
+    r"\b(retired|no longer|discontinued|stale|outdated|out of date|superseded|replaced|instead of|unlike|"
+    r"old(?:er)? (?:quote|file|proposal|pricing)|previous (?:quote|pricing)|july)\b"
+    r"|\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}(?:hourly|by the hour|per hour|standard|advanced)\b"
+    r"|n't\s+(?:\w+\s+){0,2}(?:hourly|by the hour|per hour|standard|advanced)\b")
+HOURLY = r"\bhourly\b|/\s?(?:hour|hr)\b|\bper (?:hour|hr)\b|\ban hour\b|\bby the hour\b"
 STALE = {
-    "$250/month": r"\$\s?250\b[^\n]{0,25}?(/\s?mo|per month|a month|monthly)",
-    "$3,000 Standard": r"(\$\s?3,?000\b[^\n]{0,60}standard|standard[^\n]{0,60}\$\s?3,?000\b)",
-    "hourly": r"\bhourly\b|/\s?hour\b|per hour\b",
+    "$250/month": r"\$\s?250\b",
+    "$3,000 setup": r"\$\s?3,?000\b",
+    "hourly": HOURLY,
     "Standard tier": r"\bstandard (tier|build|package|plan)\b|\badvanced (tier|build|package|plan)\b",
 }
 for label, pat in STALE.items():
@@ -68,10 +74,18 @@ for label, pat in STALE.items():
             fails.append(f"stale pricing present: {label}")
             break
 
-# --- structure: at least 7 of 10 section cues ---
+# --- structure: at least 7 of 10 section cues (on heading lines only) ---
 CUES = ["executive summary", "scope", "timeline", "pricing", "terms",
         "assumptions", "next steps", "deliverables", "support", "payment"]
-hit = [c for c in CUES if c in lc]
+# Cues count only on heading lines: markdown '#', bold '**', <h1-6>, or a short title-like plain line
+# (<=50 chars, no trailing sentence punctuation, not a bullet or table row). Prose mentions do not count.
+def is_heading(l):
+    if re.match(r"\s*(#{1,6}\s|\*\*|<h[1-6])", l):
+        return True
+    t = l.strip()
+    return bool(t) and len(t) <= 50 and not re.search(r"[.!?,;:]$", t) and not re.match(r"[|\-*+>]|\d+\)", t)
+heads = "\n".join(l for l in lc.splitlines() if is_heading(l))
+hit = [c for c in CUES if c in heads]
 if len(hit) < 7:
     fails.append(f"only {len(hit)}/10 section cues ({', '.join(hit)})")
 
