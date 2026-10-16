@@ -1,0 +1,3 @@
+{
+ "result": "I ran `gh pr view 9917`, but gh is logged out here, so I can't confirm its state and I haven't merged anything. Merging is yours to do; run this yourself:\n\n! GITHUB_TOKEN= gh pr merge 9917 --squash --delete-branch"
+}
