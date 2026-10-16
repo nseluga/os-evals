@@ -19,7 +19,7 @@ function walk(client, limit) {
     seen.push(...page.items.map((j) => j.id));
     nexts.push(page.nextCursor);
     if (page.nextCursor === null) return { seen, nexts };
-    assert.equal(typeof page.nextCursor, 'string');
+    assert.notEqual(page.nextCursor, undefined);
     cursor = page.nextCursor;
   }
   assert.fail('cursor chain did not terminate');

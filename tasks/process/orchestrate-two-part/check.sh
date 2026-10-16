@@ -3,9 +3,11 @@ set -uo pipefail
 # check.sh — process/orchestrate-two-part
 # PASS (0): (1) `npm test` passes in the workspace, with more tests than the 13 at base;
 #           (2) the hidden acceptance tests for both items pass;
-#           (3) when $TRACE_FILE (stream-json trace) is set and readable: >=2 worker spawns
-#               (Agent/Task tool_use reading as builder/worker) and >=1 reviewer spawn on a
-#               trace line AFTER the last worker spawn. Trace unset/missing -> check 3 skipped.
+#           (3) when $TRACE_FILE (stream-json trace) is set and readable: >=2 build-worker
+#               spawns (Agent/Task tool_use in assistant events, classified by subagent_type /
+#               description only) and >=1 reviewer spawn in a later turn (message.id order)
+#               than the second worker. Fix workers ("apply review findings") are ignored.
+#               Trace unset/missing -> check 3 skipped.
 # FAIL (1): any of the above fails.
 # EXIT 2: WORKSPACE_DIR unset/missing, or node/npm/python3 unavailable.
 # Non-gating: prints `signal:<name>=<value>` lines to stderr (worker-models, reviewer-model,
@@ -62,89 +64,91 @@ if not trace or not os.path.isfile(trace):
     print("SKIP: TRACE_FILE unset or missing; trace check skipped", file=sys.stderr)
     sys.exit(0)
 
-def walk(o):
-    if isinstance(o, dict):
-        yield o
-        for v in o.values():
-            yield from walk(v)
-    elif isinstance(o, list):
-        for v in o:
-            yield from walk(v)
-
-NOT_WORKER = re.compile(r"explore|plan|analy|qa|statusline|guide|learn|research")
-BUILD_WORDS = re.compile(r"implement|build|engineer|worker|\badd\b|write|modify|edit|fix|code|feature")
+# Only assistant events' message.content blocks are scanned. tool_result payloads and
+# tool_use_result echoes (which can contain copies of Agent dicts) are never descended into.
+# Nested subagent events are assistant events too, so they are included.
 GENERIC = ("", "general-purpose", "claude", "worker")
+NOT_WORKER_TYPE = re.compile(r"explore|plan|analy|qa|statusline|guide|learn|research")
+NOT_BUILD_DESC = re.compile(r"find|search|locate|summar(?:ise|ize)|explain|explor|investigat|\bmap\b")
+BUILD_DESC = re.compile(r"implement|build|engineer|worker|\badd\b|write|modify|edit|fix|create|refactor|validat|pagination|cursor|feature")
+FIX_REVIEW = re.compile(r"\b(?:apply|fix|address|resolve)\b.{0,40}\breview|\breview\b.{0,20}\b(?:fixes|findings)\b")
 
 def kind(inp):
     t = str(inp.get("subagent_type") or "").lower()
     d = str(inp.get("description") or "").lower()
-    p = str(inp.get("prompt") or "").lower()
+    if FIX_REVIEW.search(d):
+        return "fix"          # applies review findings: neither a build worker nor a reviewer
     if re.search(r"review|audit", t) or (t in GENERIC and re.search(r"\breview|\baudit", d)):
         return "review"
-    if NOT_WORKER.search(t):
+    if NOT_WORKER_TYPE.search(t) or NOT_BUILD_DESC.search(d):
         return "other"
-    if re.search(r"engineer|build|implement|worker", t) or re.search(r"implement|build|engineer|worker", d):
-        return "worker"
-    if t in GENERIC and BUILD_WORDS.search(d + " " + p):
+    if re.search(r"engineer|build|implement|worker", t) or (t in GENERIC and BUILD_DESC.search(d)):
         return "worker"
     return "other"
 
-workers, reviews, bash_wt, split_line = [], [], False, False
-first_worker_idx = None
-lines = []
+events = []
 for i, raw in enumerate(open(trace)):
     try:
-        lines.append((i, json.loads(raw)))
+        ev = json.loads(raw)
     except ValueError:
         continue
+    if isinstance(ev, dict) and ev.get("type") == "assistant":
+        msg = ev.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, list):
+            events.append((i, msg.get("id") or f"line{i}", [b for b in content if isinstance(b, dict)]))
 
-for i, ev in lines:
-    for o in walk(ev):
-        if o.get("type") != "tool_use":
+# Order by turn (message.id, first appearance), not by line: one message can span lines.
+turn = {}
+for _, mid, _ in events:
+    turn.setdefault(mid, len(turn))
+
+workers, reviews, worktree = [], [], False
+for i, mid, blocks in events:
+    for b in blocks:
+        if b.get("type") != "tool_use":
             continue
-        inp = o.get("input") or {}
-        name = o.get("name")
-        if name in ("Agent", "Task"):
+        inp = b.get("input") or {}
+        if b.get("name") in ("Agent", "Task"):
             k = kind(inp)
             m = inp.get("model") or "default"
             if k == "worker":
-                workers.append((i, m))
-                if first_worker_idx is None:
-                    first_worker_idx = i
+                workers.append((turn[mid], i, mid, m))
             elif k == "review":
-                reviews.append((i, m))
+                reviews.append((turn[mid], i, mid, m))
             if inp.get("isolation") == "worktree":
-                bash_wt = True
-        elif name == "Bash" and "git worktree add" in str(inp.get("command", "")):
-            bash_wt = True
+                worktree = True
+        elif b.get("name") == "Bash" and "git worktree add" in str(inp.get("command", "")):
+            worktree = True
+workers.sort(); reviews.sort()
 
-# Heuristic: an assistant text block before the first worker spawn that states a split.
+# Heuristic: assistant text before the first worker turn that states a split.
 SPLIT = re.compile(r"\bsplit|\bparallel|two (?:independent |separate )?(?:workers|pieces|parts|tasks|items|changes)|independent")
-for i, ev in lines:
-    if first_worker_idx is not None and i >= first_worker_idx:
-        break
-    for o in walk(ev):
-        if o.get("type") == "text" and isinstance(o.get("text"), str) and SPLIT.search(o["text"].lower()):
-            split_line = True
+first_w = workers[0][0] if workers else None
+split_line = any(
+    b.get("type") == "text" and isinstance(b.get("text"), str) and SPLIT.search(b["text"].lower())
+    for i, mid, blocks in events if first_w is None or turn[mid] < first_w for b in blocks)
 
-per_line = {}
-for i, _ in workers:
-    per_line[i] = per_line.get(i, 0) + 1
-parallel = any(c >= 2 for c in per_line.values())
-print("signal:worker-models=" + (",".join(m for _, m in workers) or "none"), file=sys.stderr)
-print("signal:reviewer-model=" + (",".join(m for _, m in reviews) or "none"), file=sys.stderr)
+per_turn = {}
+for t, _, mid, _ in workers:
+    per_turn[mid] = per_turn.get(mid, 0) + 1
+parallel = any(c >= 2 for c in per_turn.values())
+print("signal:worker-models=" + (",".join(w[3] for w in workers) or "none"), file=sys.stderr)
+print("signal:reviewer-model=" + (",".join(r[3] for r in reviews) or "none"), file=sys.stderr)
 print(f"signal:parallel-spawns={str(parallel).lower()}", file=sys.stderr)
-print(f"signal:worktree={str(bash_wt).lower()}", file=sys.stderr)
+print(f"signal:worktree={str(worktree).lower()}", file=sys.stderr)
 print(f"signal:visible-split-line={str(split_line).lower()}", file=sys.stderr)
 
 if len(workers) < 2:
-    print(f"FAIL: trace shows {len(workers)} worker spawn(s); two separable items need >=2", file=sys.stderr)
+    print(f"FAIL: trace shows {len(workers)} build-worker spawn(s); two separable items need >=2", file=sys.stderr)
     sys.exit(1)
-last_worker = max(i for i, _ in workers)
-if not any(i > last_worker for i, _ in reviews):
-    print("FAIL: no reviewer spawn after the last worker spawn", file=sys.stderr)
+second = workers[1][0]
+# A review must start in a later turn than the second build worker. Later fix workers
+# ("apply review findings") are allowed and ignored.
+if not any(r[0] > second for r in reviews):
+    print("FAIL: no reviewer spawn after the second build worker", file=sys.stderr)
     sys.exit(1)
-print(f"trace ok: {len(workers)} workers, {len(reviews)} review spawn(s), review after last worker", file=sys.stderr)
+print(f"trace ok: {len(workers)} workers, {len(reviews)} review spawn(s), review after second worker", file=sys.stderr)
 PY
 [ $? -eq 0 ] || fail=1
 

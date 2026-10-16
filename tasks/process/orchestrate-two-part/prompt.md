@@ -1,4 +1,4 @@
-This repo is a small connector worker (Node 22, ESM, no dependencies; run tests with `npm test`). Two independent changes are queued as a lane. Both are required, and each has its own done-when.
+This repo is a small connector worker (Node 22, ESM, no dependencies; run tests with `npm test`). There are two independent changes to make. Both are required, and each has its own done-when.
 
 ## Item 1: cursor pagination on `listJobs`
 

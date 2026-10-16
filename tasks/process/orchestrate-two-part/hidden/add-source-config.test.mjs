@@ -2,7 +2,7 @@
 // Runs the script in a scratch copy of the repo so data/sources.json is never touched.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync, cpSync, readFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, existsSync, cpSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -12,7 +12,7 @@ const root = new URL('..', import.meta.url).pathname;
 function scratch() {
   // realpath: the script's main-guard compares import.meta.url (resolved) with argv[1]; a symlinked tmp dir makes it a silent no-op.
   const d = realpathSync(mkdtempSync(join(tmpdir(), 'bcns-hidden-')));
-  for (const p of ['src', 'scripts', 'data', 'package.json']) cpSync(join(root, p), join(d, p), { recursive: true });
+  for (const p of ['src', 'lib', 'scripts', 'data', 'api', 'package.json']) if (existsSync(join(root, p))) cpSync(join(root, p), join(d, p), { recursive: true });
   const file = join(d, 'data', 'sources.json');
   const before = readFileSync(file, 'utf8');
   const run = (...args) => spawnSync(process.execPath, [join(d, 'scripts', 'add-source.mjs'), ...args], { encoding: 'utf8' });
