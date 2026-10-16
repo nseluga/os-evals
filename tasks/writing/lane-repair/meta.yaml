@@ -6,7 +6,7 @@ curated_skill: lane
 tools: default
 timeout_sec: 900
 max_budget_usd: 1.50
-judge_files: LANE.md
+judge_files: LANE.md, seed/LANE.md
 description: |
   Exercises the lane skill's schema knowledge: repair a seeded LANE.md so an unattended
   dev-team-auto run cannot stall or misbehave. Seeded workspace (LANE.md, a 3-item feature
@@ -26,6 +26,13 @@ description: |
        it stands in for "an item's identity" and the check only enforces uniqueness).
     7. Stop marker malformed: bare "**AUTONOMOUS RUN — STOP HERE**" with no blockquote '>'
        and no warning sign; must start '> **⚠️ AUTONOMOUS RUN — STOP HERE'.
+
+  Check rules (loose by design, any reasonable rewrite passes): guardrails fail only on soft
+  wording (try to, where possible, if possible, ideally, prefer, consider, should), so
+  invariants like "stays unchanged" pass; wrapped bullets join their first line; open
+  questions are TBD/TODO or a line ending in '?' outside backtick code spans; done-when
+  fails on vague words (works well, properly, correctly, as expected, robust, good) or no
+  concrete cue; caution/ui accept 'true' with a trailing '# comment'.
 
   Check type: filesystem assertion via WORKSPACE_DIR; small python3 schema parser reads
   LANE.md. PASS (exit 0) iff no flaw remains; otherwise exit 1 with the remaining problems

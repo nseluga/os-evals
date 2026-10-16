@@ -93,30 +93,45 @@ for s, blk in items:
         i = fields["id"][0].strip().strip("`'\"")
         ids.setdefault(i, []).append(label)
 
-    # testable done-when: every criterion needs a concrete check cue
+    def bullets(vals):
+        out = []
+        for v in vals:
+            if v.startswith("- "):
+                out.append(v[2:].strip())
+            elif out:
+                out[-1] += " " + v  # wrapped continuation joins the previous bullet
+            else:
+                out.append(v)
+        return out
+
+    # testable done-when: every criterion needs a concrete check cue and no vague wording
     CUE = re.compile(r"\b(tests?|exits?|return\w*|print\w*|files?|status|count|passes|passing|responds?|"
-                     r"errors?|output|logs?|equals?|rows?)\b|≥|≤|==|\d", re.I)
-    for b in fields.get("done when", []):
-        b = re.sub(r"^-\s*", "", b)
-        if not CUE.search(b):
+                     r"errors?|output|logs?|equals?|rows?|stored|shows?|contains?|persist\w*|GET|POST)\b"
+                     r"|≥|≤|==|\d", re.I)
+    VAGUE = re.compile(r"\b(works? well|properly|correctly|as expected|robust\w*|good)\b", re.I)
+    for b in bullets(fields.get("done when", [])):
+        if VAGUE.search(b) or not CUE.search(b):
             problems.append(f"{label}: done-when not testable: {b!r}")
 
-    # guardrails must be prohibitions
-    PROHIB = re.compile(r"\b(never|do not|don't|must not|not|no)\b", re.I)
-    for b in fields.get("guardrails", []):
-        b = re.sub(r"^-\s*", "", b)
-        if re.match(r"^(try to|avoid|prefer|ideally|should|consider|where possible)\b", b, re.I) \
-                or not PROHIB.search(b):
-            problems.append(f"{label}: guardrail is not a prohibition: {b!r}")
+    # guardrails: prohibitions or invariants are fine; soft suggestions are not
+    SOFT = re.compile(r"\b(try to|where possible|if possible|ideally|prefer|consider|should)\b", re.I)
+    for b in bullets(fields.get("guardrails", [])):
+        if SOFT.search(b):
+            problems.append(f"{label}: guardrail is a suggestion, not a prohibition: {b!r}")
 
-    # caution / ui values
+    # caution / ui values (trailing YAML comment allowed)
     for key in ("caution", "ui"):
-        if key in fields and (not fields[key] or fields[key][0].strip().lower() != "true"):
-            problems.append(f"{label}: '{key}:' must be 'true' or absent, got {' '.join(fields[key])!r}")
+        if key in fields:
+            v = re.sub(r"\s*#.*$", "", " ".join(fields[key])).strip().lower()
+            if v != "true":
+                problems.append(f"{label}: '{key}:' must be 'true' or absent, got {v!r}")
 
-    # open questions
-    if re.search(r"\bTBD\b|\bTODO\b|\?", text):
-        problems.append(f"{label}: open question (TBD/TODO/'?') left in the item body")
+    # open questions: TBD/TODO, or a line that ends in '?' (code spans like ?limit=1 ignored)
+    for l in blk:
+        l2 = re.sub(r"`[^`]*`", "", l)
+        if re.search(r"\bTBD\b|\bTODO\b|\?\s*$", l2):
+            problems.append(f"{label}: open question (TBD/TODO/trailing '?') left in the item body")
+            break
 
 for i, where in ids.items():
     if len(where) > 1:
