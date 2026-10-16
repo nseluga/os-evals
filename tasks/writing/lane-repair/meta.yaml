@@ -1,0 +1,56 @@
+category: writing
+default: true
+contaminated: true
+group: knowledge-informed
+curated_skill: lane
+tools: default
+timeout_sec: 900
+max_budget_usd: 1.50
+judge_files: LANE.md, seed/LANE.md
+description: |
+  Exercises the lane skill's schema knowledge: repair a seeded LANE.md so an unattended
+  dev-team-auto run cannot stall or misbehave. Seeded workspace (LANE.md, a 3-item feature
+  lane for a small Node parcel-tracking service); the model edits LANE.md in place.
+
+  contaminated: true, group: knowledge-informed — the schema (required Objective block,
+  testable done-when, prohibition guardrails, caution: true only, STOP HERE marker format)
+  lives in the lane-md framework note, not in the prompt.
+
+  Seven planted flaws in seed/LANE.md:
+    1. Missing required top-level field: no '## Objective' block in the preamble.
+    2. Item 1 (parcel-lookup, line ~12): open question left in the body, "TBD: which DB?".
+    3. Item 2 (status-updates, line ~25): vague done-when, "The new endpoint works well".
+    4. Item 2: guardrail phrased as a suggestion, "Try to avoid changing ... where possible".
+    5. Item 2: caution value the schema does not accept, "caution: high" (only true or absent).
+    6. Items 1 and 3 share id "parcel-lookup" (id: is a plain extra field, not in lane-md;
+       it stands in for "an item's identity" and the check only enforces uniqueness).
+    7. Stop marker malformed: bare "**AUTONOMOUS RUN — STOP HERE**" with no blockquote '>'
+       and no warning sign; must start '> **⚠️ AUTONOMOUS RUN — STOP HERE'.
+
+  Check rules (loose by design, any reasonable rewrite passes):
+    - guardrails fail only on soft wording (try to, where possible, if possible, ideally,
+      prefer, consider, feasible, practical, as much as possible, aim to, a bare "should"),
+      so invariants like "stays unchanged" and "should never" pass;
+    - wrapped bullets join their first line;
+    - open questions fail on TBD/TODO (any case), a '?' followed by space or end of line, or
+      a still-open choice ("undecided", "to be decided", or "Postgres or SQLite" with
+      no pick); backtick code spans
+      such as `?limit=1` are ignored;
+    - each item needs 2-4 done-when criteria, so deleting the vague one is not a fix;
+    - a done-when fails on vague words (works well, properly, as expected, as intended,
+      robust, fine, nicely, a bare "good") or when it has no concrete cue (test, returns,
+      status, stored, shows, persists, GET/POST, a digit ...);
+    - caution/ui accept 'true' with a trailing '# comment'.
+
+  Check type: filesystem assertion via WORKSPACE_DIR; small python3 schema parser reads
+  LANE.md. PASS (exit 0) iff no flaw remains; otherwise exit 1 with the remaining problems
+  listed on stdout. It matches structure and cue words, not the exact wording of any fix.
+  Exit 2 if WORKSPACE_DIR is unset or not a directory; exit 1 if LANE.md is missing.
+
+  Failure mode: a run where the skill fires but no file is written is its own failure.
+  The check returns 1 because LANE.md is unchanged (the untouched seed reports all 7
+  problems; verified).
+
+  Fixtures: tests/good (all 7 fixed) -> 0; tests/bad (flaws 1, 2, 5, 7 fixed; 3, 4, 6 left)
+  -> 1. The open question in flaw 2 should be resolved with a stated assumption, not
+  deleted; the check cannot see that, so rubric.md scores it.
