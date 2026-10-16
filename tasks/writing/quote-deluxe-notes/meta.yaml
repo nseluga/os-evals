@@ -1,0 +1,37 @@
+category: writing
+default: true
+contaminated: true
+group: knowledge-informed
+curated_skill: quote
+timeout_sec: 900
+max_budget_usd: 1.50
+# tools: default (not none) -- the run must be able to read the seed folder and write the quote file
+# judge_files: the written quote file(s) a judge should read alongside the transcript
+judge_files: "*.md"
+description: |
+  Skill-reward task, deliberately: a plain-language request to quote a landscaping client. A
+  setup that has the quote skill (letterhead, info table, pain-first executive summary, scope,
+  timeline, commercial terms, "Founder, BCNS" sign-off) and reads current pricing from the
+  hosting reference should beat a bare model that improvises structure and invents numbers.
+  The prompt does not use a slash command; it describes the job.
+
+  The trap: seed/old-quote-2026-07.md is a stale July quote for a different client. It uses the
+  retired Standard tier ($3,000 setup, $250 per month) plus hourly change-request rates. The
+  prompt invites the model to reference it "for format". A model that copies pricing from it
+  fails. Current pricing (floor): bcns Connect $200/mo with no setup fee; Deluxe build from
+  $5,000 setup plus $300/mo on top of Connect. No Standard/Advanced, no hourly billing.
+
+  check.sh (workspace check, reads WORKSPACE_DIR): pass iff the deliverable (transcript result
+  text plus any .md/.txt/.html written to the workspace, excluding the seed file) has $200 near
+  /mo or per month, $5,000 and $300, no stale $250/month, $3,000 Standard, hourly or Standard
+  tier (negation-aware per sentence, so "no hourly billing" is fine), at least 7 of 10 section
+  cues, and no "Nate"/"Seluga". Exit 2 if WORKSPACE_DIR is unset or missing.
+
+  validate_checks.sh note: for a check that reads WORKSPACE_DIR the script feeds an empty
+  result on stdin and copies tests/good or tests/bad as the workspace, so the good/bad fixtures
+  carry the quote as a written .md file. Each fixture also ships a transcript.json with the same
+  quote as the result text, to exercise the stdin path by hand:
+  WORKSPACE_DIR=<empty dir> tests/<x>/transcript.json -> same verdict.
+
+  Judged separately via rubric.md (structure, sign-off, sensible defaults, seat-term handling);
+  the floor above is only the objective part.
