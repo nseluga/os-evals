@@ -55,7 +55,7 @@ from contamination import contamination_rules, find_contamination, scrub_env, wo
 DEFAULT_WS_ROOT = "/Users/Shared/evalws"
 KNOWN_LAYERS = ("bare", "claude-md", "memory", "skills", "full")
 REPO_ROOT = Path(__file__).parent.parent
-OPUS_COST_MULTIPLIER = 4.0  # rough guess: Opus $/run vs the Sonnet history; not measured
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # the CLI's --effort set
 
 
 def find_tasks(tasks_dir: Path, include_non_default: bool = True) -> list[str]:
@@ -440,10 +440,12 @@ def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str
 
 
 def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
-              max_budget_usd: float | None = None) -> list[str]:
+              max_budget_usd: float | None = None, effort: str | None = None) -> list[str]:
     """argv for one claude run (pure; run_one adds cwd/env/stdin)."""
     cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model]
     cmd.extend(extra_flags)
+    if effort:
+        cmd.extend(["--effort", effort])
     if task_meta.get("tools") == "none":
         cmd.extend(["--tools", ""])
     if max_budget_usd is not None:
@@ -465,6 +467,7 @@ def run_one(
     rung=None,
     max_budget_usd: float | None = None,
     ws_root: Path | None = None,
+    effort: str = "high",
 ) -> Path:
     """Run claude -p for one task/layer/model combo. Returns path to saved transcript.
 
@@ -484,13 +487,13 @@ def run_one(
     # Every run captures the whole turn-by-turn event stream (stream-json): it feeds the
     # contamination check and shows sub-agent spawns and skill activation. The terminal
     # result event is normalized into the transcript shape score.py reads.
-    cmd = build_cmd(model, extra_flags, task_meta, max_budget_usd)
+    cmd = build_cmd(model, extra_flags, task_meta, max_budget_usd, effort)
 
     # Only the claude subprocess gets the scrubbed env (setup.sh/restore keep the real one).
     env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}"
+    base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}_{effort}"
     run_id = f"{base_run_id}_r{repeat_index}" if repeat_total > 1 else base_run_id
 
     # Every run gets its OWN per-run dir <ws_root>/w-<hex>/ holding w/ (the cwd) and cfg/
@@ -523,7 +526,7 @@ def run_one(
 
     cwd = str(ws_dir)
 
-    print(f"  running: {rung} task={task} model={model}", flush=True)
+    print(f"  running: {rung} task={task} model={model} effort={effort}", flush=True)
     print(f"    flags: {extra_flags}", flush=True)
     print(f"    env overrides: {list(env_vars.keys())}", flush=True)
     print(f"    mode: {'multi-turn' if multi_turn else 'one-shot'} timeout={timeout_sec}s", flush=True)
@@ -617,6 +620,9 @@ def run_one(
         "layer": str(layer),
         "os_sha": os_sha,
         "model": model,
+        "effort": effort,
+        "model_resolved": next((e.get("model") for e in events
+                                if e.get("type") == "system" and e.get("subtype") == "init"), None),
         "returncode": returncode,
         "stderr": stderr[:2000] if stderr else "",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -752,7 +758,13 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--ws-root", default=os.environ.get("EVAL_WS_ROOT", "") or DEFAULT_WS_ROOT)
     parser.add_argument("--repeat", type=int, default=None)
+    parser.add_argument("--effort", default="high", help=f"comma-separated, from {','.join(EFFORTS)}")
     args = parser.parse_args()
+    efforts = [e for e in args.effort.split(",") if e]
+    bad_e = [e for e in efforts if e not in EFFORTS]
+    if bad_e or not efforts:
+        print(f"run_matrix: ERROR unknown --effort {bad_e or args.effort!r}; known: {', '.join(EFFORTS)}", file=sys.stderr)
+        return 2
     if args.repeat is not None and args.repeat < 1:
         print(f"run_matrix: ERROR --repeat must be >= 1 (got {args.repeat})", file=sys.stderr)
         return 2
@@ -799,15 +811,17 @@ def main() -> int:
         plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
 
     if args.dry_run:
-        total = sum(len(tc) * len(models) * rep for _, tc, rep in plan)
-        print(f"matrix ({len(tasks)} tasks x {len(cells)} cells x {len(models)} models):")
+        ne = len(efforts)
+        total = sum(len(tc) * len(models) * ne * rep for _, tc, rep in plan)
+        print(f"matrix ({len(tasks)} tasks x {len(cells)} cells x {len(models)} models x {ne} efforts):")
         for task, tc, rep in plan:
-            print(f"  {task}: {len(tc)} cells x {len(models)} models x {rep} repeat = {len(tc) * len(models) * rep}")
+            for effort in efforts:
+                print(f"  {task}: {len(tc)} cells x {len(models)} models x {rep} repeat = {len(tc) * len(models) * rep}  [effort={effort}]")
         for layer, sha, label in cells:
             env_vars, flags = load_rung(configs_dir, layer, sha)
             env = redact_env(env_vars)
             print(f"command [{label}]: claude -p --output-format stream-json --verbose --model <model> {' '.join(flags)} "
-                  f"--max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
+                  f"--effort {','.join(efforts)} --max-budget-usd {args.max_budget_usd} --dangerously-skip-permissions")
             print(f"  env: {env}")
             print(f"  HOME: {env.get('HOME', '(real HOME, not isolated)')}")
             gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars))))
@@ -817,13 +831,18 @@ def main() -> int:
         no_tools = sorted(t for t, m in metas.items() if m["tools"] == "none")
         if no_tools:
             print(f'--tools "" added for: {", ".join(no_tools)}')
-        counts = {t: len(tc) * len(models) * rep for t, tc, rep in plan}
-        est = estimate_cost(load_history(REPO_ROOT / "scorecards"), counts,
+        counts = {t: len(tc) * len(models) * len(efforts) * rep for t, tc, rep in plan}
+        history = load_history(REPO_ROOT / "scorecards")
+        est = estimate_cost(history, counts,
                             {t for t, m in metas.items() if m["multi_turn"]})
         wall_par = est["secs_one"] / jobs + est["secs_multi"]
         print(f"estimate from past Sonnet runs: ${est['cost']:.2f}, serial wall "
               f"{(est['secs_one'] + est['secs_multi']) / 60:.0f} min; with --jobs {jobs}: {wall_par / 60:.0f} min")
-        print(f"estimate if Opus (x{OPUS_COST_MULTIPLIER:g} cost guess): ${est['cost'] * OPUS_COST_MULTIPLIER:.2f}")
+        from stats import model_ratios  # lazy: stats imports score, which imports this module
+        ratios = model_ratios([x for h in history for x in h])
+        for m in (m for m in models if "sonnet" not in m.lower()):
+            r = ratios.get(m, "UNMEASURED")
+            print(f"measured cost ratio {m} vs sonnet: " + (r if isinstance(r, str) else f"{r:.2f}x (median, matched cells)"))
         if est["no_history"]:
             print(f"  no history (median of others used): {', '.join(est['no_history'])}")
         print(f"jobs: {jobs}  workspaces: {os.path.abspath(ws_root)}")
@@ -832,12 +851,13 @@ def main() -> int:
     ws_root.mkdir(parents=True, exist_ok=True)
 
     items = [
-        {"task": task, "layer": layer, "sha": sha, "label": label, "model": model, "i": i,
+        {"task": task, "layer": layer, "sha": sha, "label": label, "model": model, "effort": effort, "i": i,
          "repeat": repeat, "multi_turn": read_task_meta(tasks_dir / task)["multi_turn"],
-         "label_id": f"{task}/{label}/{model}/r{i}"}
+         "label_id": f"{task}/{label}/{model}/{effort}/r{i}"}
         for task, task_cells, repeat in plan
         for layer, sha, label in task_cells
         for model in models
+        for effort in efforts
         for i in range(1, repeat + 1)
     ]
 
@@ -846,7 +866,7 @@ def main() -> int:
             it["task"], it["layer"], it["model"], tasks_dir, configs_dir, runs_dir,
             repeat_index=it["i"], repeat_total=it["repeat"],
             os_sha=it["sha"], rung=it["label"], max_budget_usd=args.max_budget_usd,
-            ws_root=ws_root,
+            ws_root=ws_root, effort=it["effort"],
         )
 
     _, failures = execute_items(items, runner, jobs)

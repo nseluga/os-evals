@@ -15,9 +15,12 @@ Outputs:
 
 import argparse
 import json
+import statistics
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+from score import EFFORTS
 
 RUNG_PAIRS = [(1, 2), (2, 3), (3, 4), (1, 4)]   # legacy int rungs (pre-layers runs)
 LADDER = ["bare", "claude-md", "memory", "skills", "full"]
@@ -166,6 +169,78 @@ def token_summary(scores: list[dict]) -> dict:
         }
         for r, v in sorted(tok_by_rung.items(), key=lambda kv: _rung_key(kv[0]))
     }
+
+
+def _base_effort(s: dict) -> tuple[str, str]:
+    """(base_model, effort) of a score record; older records only have `model` (no effort -> "default")."""
+    m = s.get("model", "")
+    base, _, eff = m.partition(":")
+    return s.get("base_model") or base, s.get("effort") or eff or "default"
+
+
+def _cell_costs(scores: list[dict]) -> dict[tuple, float]:
+    """(base_model, task, rung, effort) -> mean cost_usd over the non-infra, non-sentinel records."""
+    acc: dict[tuple, list] = defaultdict(list)
+    for s in _effective_scores(scores):
+        if _is_sentinel(s) or _is_infra(s):
+            continue
+        b, e = _base_effort(s)
+        acc[(b, s["task"], s["rung"], e)].append(s.get("cost_usd") or 0)
+    return {k: sum(v) / len(v) for k, v in acc.items()}
+
+
+def model_ratios(records: list[dict]):
+    """Median nominal cost ratio vs sonnet, per other base model, over matched (task, rung, effort) cells.
+
+    Returns {base_model: float | "UNMEASURED"}; UNMEASURED when no cell has both the model and
+    a sonnet run (or sonnet is absent). Sonnet itself is the baseline and is not listed."""
+    costs = _cell_costs(records)
+    models = sorted({k[0] for k in costs})
+    sonnet = {k[1:]: c for k, c in costs.items() if "sonnet" in k[0].lower()}
+    out = {}
+    for m in models:
+        if "sonnet" in m.lower():
+            continue
+        ratios = [c / sonnet[k[1:]] for k, c in costs.items()
+                  if k[0] == m and sonnet.get(k[1:])]
+        out[m] = statistics.median(ratios) if ratios else "UNMEASURED"
+    return out
+
+
+def model_ratios_section(scores: list[dict]) -> list[str]:
+    ratios = model_ratios(scores)
+    if not ratios:
+        return []
+    lines = ["## Model Cost Ratios (nominal, vs sonnet)", ""]
+    for m, r in ratios.items():
+        lines.append(f"- {m}: " + (r if isinstance(r, str) else f"{r:.2f}x"))
+    return lines + [""]
+
+
+def effort_section(scores: list[dict]) -> list[str]:
+    """Paired sign-test across ADJACENT efforts, per layer per base model, over tasks.
+
+    Same convention as the rung pairs: "higher" = the higher effort. Only emitted when some
+    base model ran at 2+ efforts."""
+    scored = [s for s in _effective_scores(scores) if not _is_sentinel(s) and not _is_infra(s)]
+    cell: dict[tuple, dict] = {}
+    for s in scored:
+        b, e = _base_effort(s)
+        if e in EFFORTS:
+            cell.setdefault((b, s["rung"], e), {})[s["task"]] = s
+    lines: list[str] = []
+    for b, rung in sorted({k[:2] for k in cell}, key=lambda k: (k[0], _rung_key(k[1]))):
+        efforts = [e for e in EFFORTS if (b, rung, e) in cell]
+        for lo, hi in zip(efforts, efforts[1:]):
+            lo_c, hi_c = cell[(b, rung, lo)], cell[(b, rung, hi)]
+            shared = sorted(set(lo_c) & set(hi_c))
+            w_hi = sum(1 for t in shared if hi_c[t]["passed"] and not lo_c[t]["passed"])
+            w_lo = sum(1 for t in shared if lo_c[t]["passed"] and not hi_c[t]["passed"])
+            cost = lambda c: sum(c[t].get("cost_usd") or 0 for t in shared) / len(shared)  # noqa: E731
+            lines.append(f"- {b} @ {_rl(rung)}: **{lo} -> {hi}** higher effort won "
+                         f"{sign_test(w_lo, w_hi, len(shared) - w_hi - w_lo)}"
+                         + (f"; avg cost ${cost(lo_c):.4f} -> ${cost(hi_c):.4f}" if shared else ""))
+    return ["## Effort Sign-Test (adjacent efforts)", "", *lines, ""] if lines else []
 
 
 LAYER_NAMES = {
@@ -578,6 +653,9 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
     lines += verdict_section(data, all_scores)
 
     lines += cross_model_section(all_scores)
+
+    lines += effort_section(all_scores)
+    lines += model_ratios_section(all_scores)
 
     lines += ["## Per-Run Results", ""]
     lines += ["| Task | Rung | Pass | Tokens | Cost |", "|------|------|------|--------|------|"]

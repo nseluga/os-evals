@@ -17,6 +17,7 @@ set -euo pipefail
 #   ./run.sh --jobs 4                     # one-shot tasks 4 at a time; multi-turn stay serial
 #   ./run.sh --ws-root /some/dir          # workspace root (default $EVAL_WS_ROOT or /Users/Shared/evalws)
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
+#   ./run.sh --effort low,high            # effort axis (low|medium|high|xhigh|max, default high)
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
 #
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
@@ -44,6 +45,7 @@ CLEAN_WS=0
 JOBS=1
 WS_ROOT=""
 REPEAT=""
+EFFORT="high"
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -61,6 +63,7 @@ while [ $# -gt 0 ]; do
         --ws-root) WS_ROOT="$2"; shift 2;;
         --clean-ws) CLEAN_WS=1; shift;;
         --repeat) REPEAT="$2"; shift 2;;
+        --effort) EFFORT="$2"; shift 2;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
@@ -103,7 +106,7 @@ while [ -e "$SCORECARDS_DIR/${STAMP}.md" ] || [ -e "$SCORECARDS_DIR/${STAMP}.sco
     TS="$(date -u +%Y%m%dT%H%M%SZ)"
     STAMP="${TS}-${OS_SHA}"
 done
-echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
+echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  effort=$EFFORT  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
 
 # --- Auto-discover tasks if none given (exclude the print-date smoke test) ---
 if [ -z "$TASKS" ]; then
@@ -143,7 +146,7 @@ else
 fi
 
 MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget-usd "$MAX_BUDGET"
-    --jobs "$JOBS"
+    --jobs "$JOBS" --effort "$EFFORT"
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
