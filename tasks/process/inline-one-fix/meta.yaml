@@ -1,0 +1,38 @@
+category: process
+gate: capability
+default: true
+contaminated: false
+group: clean
+tools: default
+timeout_sec: 900
+max_budget_usd: 1.5
+signals: no-spawn,turns<=12
+judge_files: "src/helpers.mjs,test/*.test.mjs"
+source: authored fixture; one-line fix on the bcns-mini repo, measures over-orchestration
+description: |
+  Process-behavior task. A one-line bug (redact() in src/helpers.mjs does not mask
+  Shopify `shpss_` tokens) that should be fixed inline: read the function, change the
+  token pattern, add a test, run the tests. The task measures over-orchestration: a
+  configuration that routes every coding task to subagents/workers spends many times the
+  needed tokens here and gains nothing.
+
+  Workspace: bcns-mini at 4a8f740 (Node 22 ESM, zero deps, `npm test`). Reference
+  solution: branch solution/redact-shpss (378962183), a one-line regex change plus a test.
+
+  Check (check.sh): exit 2 if WORKSPACE_DIR unset/missing. FAIL (1) if `npm test` fails;
+  if the hidden test hidden/redact-shpss.test.mjs (several shpss_ tokens, plus shpat_,
+  sk_live_ and Bearer cases) fails when copied into test/; if the trace shows any
+  `Agent`/`Task` tool_use (any spawn); or if the run has more than 12 assistant turns
+  (fixed generous ceiling; the plan said <= 2x the bare median, the harness may replace
+  the constant later; turns are counted per distinct message id).
+
+  TRACE_FILE dependency: the harness does NOT export TRACE_FILE yet (harness item 1.7 wires
+  it). Until then only the redact gate (npm test + hidden test) fires; the no-spawn and
+  turn-ceiling checks are skipped for real runs. When TRACE_FILE is set, the trace is read
+  from it (set but missing = exit 2); when unset, check.sh reads $WORKSPACE_DIR/trace.jsonl
+  only for fixture paths (*/tests/*, */os-evals-validate/*), because validate_checks.sh does
+  not feed traces yet; a real run workspace is model-writable and is never read for a trace.
+
+  Fixtures: tests/good = solution workspace + 3-turn trace; tests/bad = solution workspace
+  + trace with an Agent spawn (dt-engineer), must fail though the code is right;
+  tests/bad2 = untouched base workspace + good trace, fails the hidden test.
