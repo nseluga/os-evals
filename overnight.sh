@@ -74,8 +74,8 @@ print(f"canary transcripts={n} infra-flagged={bad}")
 sys.exit(1 if n == 0 or bad == n else 0)
 PY
 fi
-stage verdict-opus   --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models opus   --max-budget-usd 1.50; R2=$?
-stage verdict-sonnet --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models sonnet --max-budget-usd 1.50; R3=$?
+stage verdict-opus   --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models opus   --max-budget-usd 1.50 --judge; R2=$?
+stage verdict-sonnet --no-build --tasks "$GENERAL" --layers bare,claude-md,memory,skills,full --repeat 3 --models sonnet --max-budget-usd 1.50 --judge; R3=$?
 
 [ -z "$DRY" ] && touch "$DONE"
 echo "overnight.sh: finished $(date) verdict-opus rc=$R2 verdict-sonnet rc=$R3" | tee -a "$LOG"
