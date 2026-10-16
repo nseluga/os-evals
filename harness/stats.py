@@ -225,7 +225,8 @@ def task_set_hash(scores: list[dict]) -> str:
 
 def history_line(data: dict, stamp: str = "") -> dict:
     """One run summary. Pass counts follow the Pass/Fail table (effective, non-sentinel,
-    non-infra rows); cost follows the frontier (individual valid rows)."""
+    non-infra rows). Cost is real spend: every individual row (repeat individuals and
+    non-repeat rows), infra and sentinel rows included, never the repeat_majority sums."""
     scores = data.get("scores", [])
     rungs: dict[str, dict] = {}
     for s in _effective_scores(scores):
@@ -235,8 +236,9 @@ def history_line(data: dict, stamp: str = "") -> dict:
         r["n"] += 1
         r["pass"] += bool(s.get("passed"))
     cost: dict[str, float] = defaultdict(float)
-    for s in _frontier_records(scores):
-        cost[s.get("model", "")] += s.get("cost_usd") or 0
+    for s in scores:
+        if _is_repeat_individual(s) or not s.get("repeat_majority"):
+            cost[s.get("model", "")] += s.get("cost_usd") or 0
     return {"stamp": stamp, "os_sha": data.get("os_sha", "unknown"), "task_set": task_set_hash(scores),
             "rungs": rungs, "cost_by_model": {m: round(c, 4) for m, c in sorted(cost.items())},
             "n": sum(r["n"] for r in rungs.values())}

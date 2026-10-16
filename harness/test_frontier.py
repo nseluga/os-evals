@@ -51,11 +51,13 @@ eff = stats.frontier_cells([_r("t", "bare", "m", True, 1.0), _r("t", "bare", "m"
 check("effort keys", sorted(k[2] for k in eff), ["default", "high"])
 
 # History line shape.
-DATA = {"os_sha": "abc1234", "scores": REP + [_r("s", "bare", "m2", True, 0.5, sentinel=True)]}
+INFRA = _r("i", "bare", "m", False, 2.0, infra_error=True)
+DATA = {"os_sha": "abc1234", "scores": REP + [_r("s", "bare", "m2", True, 0.5, sentinel=True), INFRA]}
 h = stats.history_line(DATA, "20260101T000000Z-abc1234")
 check("history keys", sorted(h), ["cost_by_model", "n", "os_sha", "rungs", "stamp", "task_set"])
 check("history rungs", h["rungs"], {"bare": {"pass": 1, "n": 1}})
-check("history cost (individuals only, no sentinel)", h["cost_by_model"], {"m": 3.0})
+# Real spend: 3 individuals ($3) + infra ($2) + sentinel ($0.5); the $3 majority row is not added again.
+check("history cost (all individual rows incl. infra and sentinel)", h["cost_by_model"], {"m": 5.0, "m2": 0.5})
 check("history n", h["n"], 1)
 check("task_set ignores order", stats.task_set_hash([{"task": "a"}, {"task": "b"}]), stats.task_set_hash([{"task": "b"}, {"task": "a"}]))
 json.dumps(h)
