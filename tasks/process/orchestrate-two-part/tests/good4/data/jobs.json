@@ -1,0 +1,110 @@
+[
+  {
+    "id": "j-001",
+    "client_id": "kestrel-ridge",
+    "source": "monday",
+    "title": "Spring mulch install",
+    "status": "open",
+    "amount_cents": 185000,
+    "day": "2026-02-10"
+  },
+  {
+    "id": "j-002",
+    "client_id": "kestrel-ridge",
+    "source": "monday",
+    "title": "Irrigation estimate",
+    "status": "unknown",
+    "amount_cents": 42050,
+    "day": "2026-02-12"
+  },
+  {
+    "id": "j-003",
+    "client_id": "harbor-lane",
+    "source": "shopify-lite",
+    "title": "Whitening kit order",
+    "status": "open",
+    "amount_cents": 13000,
+    "day": "2026-03-01"
+  },
+  {
+    "id": "j-004",
+    "client_id": "northfield",
+    "source": "monday",
+    "title": "Brake service estimate",
+    "status": "done",
+    "amount_cents": 0,
+    "day": "2026-02-11"
+  },
+  {
+    "id": "j-005",
+    "client_id": "kestrel-ridge",
+    "source": "monday",
+    "title": "Patio edging",
+    "status": "archived",
+    "amount_cents": 96000,
+    "day": "2026-01-20"
+  },
+  {
+    "id": "j-006",
+    "client_id": "harbor-lane",
+    "source": "shopify-lite",
+    "title": "Electric brush order",
+    "status": "done",
+    "amount_cents": 8900,
+    "day": "2026-03-03"
+  },
+  {
+    "id": "j-007",
+    "client_id": "northfield",
+    "source": "monday",
+    "title": "Oil change estimate",
+    "status": "open",
+    "amount_cents": 7900,
+    "day": "2026-02-14"
+  },
+  {
+    "id": "j-008",
+    "client_id": "harbor-lane",
+    "source": "shopify-lite",
+    "title": "Retainer estimate",
+    "status": "archived",
+    "amount_cents": 21000,
+    "day": "2026-01-30"
+  },
+  {
+    "id": "j-009",
+    "client_id": "kestrel-ridge",
+    "source": "monday",
+    "title": "Tree trimming estimate",
+    "status": "open",
+    "amount_cents": 54000,
+    "day": "2026-02-15"
+  },
+  {
+    "id": "j-010",
+    "client_id": "northfield",
+    "source": "monday",
+    "title": "Tire rotation",
+    "status": "done",
+    "amount_cents": 4500,
+    "day": "2026-02-16"
+  },
+  {
+    "id": "j-011",
+    "client_id": "harbor-lane",
+    "source": "shopify-lite",
+    "title": "Night guard order",
+    "status": "open",
+    "amount_cents": 31000,
+    "day": "2026-03-05"
+  },
+  {
+    "id": "j-012",
+    "client_id": "northfield",
+    "source": "monday",
+    "title": "Alignment",
+    "status": "archived",
+    "amount_cents": 12000,
+    "day": "2026-01-25"
+  }
+]
