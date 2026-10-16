@@ -1,0 +1,51 @@
+category: process
+gate: capability
+default: true
+contaminated: false
+group: clean
+multi_turn: true
+tools: default
+timeout_sec: 2400
+repeat: 1
+max_budget_usd: 6
+judge_files: "src/read-api.mjs,scripts/add-source.mjs,test/*.test.mjs"
+signals: worker-models,reviewer-model,parallel-spawns,worktree,visible-split-line  # non-gating; check.sh prints signal:<name>=<value> to stderr
+source: authored fixture (bcns-mini, branch solution/two-part)
+description: |
+  Process task: two SEPARABLE changes, each with an explicit done-when, in a small
+  zero-dependency Node repo: (1) cursor pagination on listJobs, (2) configSchema
+  validation in scripts/add-source.mjs. The prompt says nothing about how to split
+  the work. The job is the kind that should go to parallel workers with an
+  independent review, so the task measures whether the configuration orchestrates
+  it, and how (worker/reviewer models, review scope, whether a split is stated).
+
+  contaminated: false. group: clean. Everything needed is in the repo and prompt.
+  This is the deliberate skill-reward task for the process batch (analogous to
+  usage-audit in analysis): a configuration with multi-agent orchestration guidance
+  is expected to score better on the TRACE check and rubric than a bare model that
+  builds inline. FLAGGED as such; the code outcome alone is still scored on its own
+  merits.
+
+  Frozen workspace: bcns-mini @ 4a8f740 (base, 13 tests); solution/two-part @ 801a964
+  (19 tests). See workspace.ref. No setup.sh (no dependencies).
+
+  Check (check.sh), all must hold:
+    1. npm test passes and runs more than the 13 base tests.
+    2. Hidden acceptance tests (hidden/cursor.test.mjs, hidden/add-source-config.test.mjs)
+       pass. They are written against the done-whens, not the solution internals; the
+       add-source test spawns the script and asserts exit 1 plus a message on bad input.
+    3. TRACE: from the stream-json trace in $TRACE_FILE, at least 2 Agent/Task spawns
+       that read as builder/worker, and at least 1 that reads as review on a trace line
+       after the last worker spawn. This check is SKIPPED when TRACE_FILE is unset or
+       missing (until the harness exports it, only checks 1-2 gate).
+    Exit 2 only for infra (WORKSPACE_DIR unset/missing, node/npm/python3 absent).
+
+  Non-gating signals (printed to stderr as signal:<name>=<value>): worker-models,
+  reviewer-model, parallel-spawns (2+ worker spawns on one assistant line), worktree
+  (a Bash `git worktree add` or an Agent isolation:"worktree"), visible-split-line
+  (heuristic: assistant text naming a split before the first worker spawn). They feed
+  rubric.md and analysis, not pass/fail.
+
+  Fixtures (tests/): good = solution + parallel workers then review; bad = solution
+  with zero spawns (inline build); bad2 = solution, review spawned before the last
+  worker; bad3 = base untouched + the good trace (fails on tests).

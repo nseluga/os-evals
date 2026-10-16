@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "cwd": "/work/ws"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_010", "name": "Read", "input": {"file_path": "/work/ws/src/read-api.mjs"}}, {"type": "tool_use", "id": "toolu_011", "name": "Read", "input": {"file_path": "/work/ws/scripts/add-source.mjs"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_012", "name": "Edit", "input": {"file_path": "/work/ws/src/read-api.mjs", "old_string": "a", "new_string": "b"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_013", "name": "Edit", "input": {"file_path": "/work/ws/scripts/add-source.mjs", "old_string": "a", "new_string": "b"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_014", "name": "Bash", "input": {"command": "npm test"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Both changes are in and the suite is green."}]}}

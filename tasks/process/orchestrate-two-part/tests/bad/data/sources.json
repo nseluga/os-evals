@@ -1,0 +1,4 @@
+[
+  { "client_id": "kestrel-ridge", "source": "monday", "config": { "boardId": "b-100" } },
+  { "client_id": "harbor-lane", "source": "shopify-lite", "config": { "shopDomain": "harbor-lane.example.test", "tz": "America/New_York" } }
+]
