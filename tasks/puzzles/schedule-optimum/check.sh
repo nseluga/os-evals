@@ -19,7 +19,7 @@ t = result.replace("*", "").replace("`", "")
 sched = {}  # last occurrence of each job wins (the final listing)
 for j, m, s in re.findall(r"\bJ(\d+)\b[^\w\n]*(?:on|to|->|=>)?\W*M(\d)\b[^\d\n]*(\d+)", t, re.I):
     sched[int(j)] = (int(m), int(s))
-ms = re.findall(r"makespan\W{0,12}(\d+)", t, re.I)
+ms = re.findall(r"makespan\W{0,12}(?:is\W{0,4})?(\d+)", t, re.I)
 if set(sched) != set(DUR): fail(f"jobs scheduled {sorted(sched)}, need {sorted(DUR)}")
 if any(m not in (1, 2) for m, _ in sched.values()): fail("machine must be M1 or M2")
 if not ms: fail("no makespan= line")

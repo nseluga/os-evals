@@ -83,13 +83,13 @@ Durations (time units):
 Precedence constraints (A -> B means B cannot start until A has finished):
 {edges}
 
-Rules: each job runs without interruption on exactly one machine; a machine runs one job at a time; start times are non-negative integers; a job may start the moment its last predecessor finishes. The makespan is the time the last job finishes.
+Rules: each job runs without interruption on exactly one machine; a machine runs one job at a time; start times are non-negative integers; a job may start the moment its last predecessor finishes, and on the same machine a job may start the moment the previous one finishes (no gap needed). The makespan is the time the last job finishes.
 
 Find a schedule with the smallest possible makespan.
 
 End your reply with one line per job in exactly this form, then the makespan:
 
-J3: M1 @ 4
+J<k>: M<m> @ <start>
 (one such line for each of J1..J8)
 makespan=<n>"""
 

@@ -12,7 +12,8 @@ except Exception as e:
 t = result.replace("*", "").replace("`", "")
 got = {}
 for k in EXPECTED:
-    m = re.findall(r"\b" + k + r"\s*[=:]\s*(-?\d+)", t, re.I)
+    pat = r"depth\W*(?:is\s+)?(-?\d+)" if k == "depth" else r"\b" + k + r"\s*[=:]\s*(-?\d+)"
+    m = re.findall(pat, t, re.I)
     if m: got[k] = int(m[-1])
 if got != EXPECTED:
     print(f"FAIL: got {got}, expected {EXPECTED}", file=sys.stderr); sys.exit(1)
