@@ -259,6 +259,14 @@ def _iter_tool_uses(events: list[dict]):
                 yield block.get("name", ""), (block.get("input") or {})
 
 
+def ko_leaked(events: list[dict], skill: str) -> bool:
+    """Did a ko.<skill> run reference the knocked-out skill's files (skills/<skill>/ or agents/<skill>.md)?
+
+    The snapshot is still reachable via $HOME/os/... and skills/INDEX.md, so the knockout can leak."""
+    needles = (f"skills/{skill}/", f"agents/{skill}.md")
+    return any(n in json.dumps(inp) for _, inp in _iter_tool_uses(events) for n in needles)
+
+
 def detect_skill_fired(events: list[dict], intended_skill: str):
     """Did the intended skill actually get invoked in this run?
 
@@ -462,7 +470,7 @@ def build_run_config(template: Path, cfg: Path, mod: str | None = None) -> None:
     dir (the token comes from the keychain, never this file), and its nested session must stay per-run.
 
     `mod` is a knockout variant: "nohook" drops `hooks` from settings.json; "ko.<skill>" swaps the skills
-    symlink for a directory of per-skill symlinks without <skill>."""
+    symlink for a directory of per-skill symlinks without <skill> (agents/ likewise, minus <skill>.md)."""
     import shutil
     ko = mod[3:] if mod and mod.startswith("ko.") else None
     if mod and mod != "nohook" and ko is None:
@@ -479,10 +487,10 @@ def build_run_config(template: Path, cfg: Path, mod: str | None = None) -> None:
     for name in RUN_CONFIG_LINKS:
         if (template / name).is_symlink():
             target = os.path.join(template, os.readlink(template / name))  # join is a no-op for an absolute target
-            if ko is not None and name == "skills":
+            if ko is not None and name in ("skills", "agents"):  # a same-named agent exposes the same instructions
                 (cfg / name).mkdir()
                 for entry in sorted(os.listdir(target)):
-                    if entry != ko:
+                    if entry != (ko if name == "skills" else f"{ko}.md"):
                         os.symlink(os.path.join(target, entry), cfg / name / entry)
             else:
                 os.symlink(target, cfg / name)
@@ -746,6 +754,8 @@ def run_one(
         "repeat_index": repeat_index if repeat_total > 1 else None,
         "repeat_total": repeat_total if repeat_total > 1 else None,
     }
+    if mod.startswith("ko."):
+        transcript["_meta"]["ko_leak"] = ko_leaked(raw_events, mod[3:])
 
     out_file = runs_dir / f"{run_id}.json"
     runs_dir.mkdir(parents=True, exist_ok=True)
