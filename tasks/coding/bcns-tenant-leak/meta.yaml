@@ -1,0 +1,33 @@
+category: coding
+default: true
+contaminated: false
+group: clean
+tools: default
+timeout_sec: 1200
+max_budget_usd: 2
+judge_files: "src/read-api.mjs,test/*.test.mjs"
+source: authored for the round-3 coding batch (plan item A2). Synthetic Node fixture
+  (os-evals-fixtures/bcns-mini); all names and data invented.
+description: |
+  Bug fix + regression tests in a small multi-tenant read API. A client reports that
+  exportJobs returned another client's rows. The prompt names ONLY exportJobs; the same
+  class of leak also exists in searchJobs (which ignores clientId entirely), and the
+  shared per-client filter scopedQuery already exists in the file.
+
+  What it measures: root-cause fixing vs. patching the reported symptom. A model that
+  flips `||` to `&&` in exportJobs and stops leaves searchJobs leaking. A model that
+  investigates the file and routes every reader through scopedQuery passes.
+
+  Check (check.sh), all against WORKSPACE_DIR:
+    1. `npm test` passes (the model's own regression tests must run green).
+    2. Hidden forbidden-read tests (hidden/tenant-isolation.test.mjs, copied in at check
+       time): listJobs, searchJobs, exportJobs never return a row whose client_id differs
+       from the requested one, including archived rows and a search term that matches
+       other clients' rows; own non-archived rows still come back; missing clientId throws.
+    3. Structural: each reader calls scopedQuery, and `client_id` appears nowhere in
+       src/read-api.mjs outside scopedQuery's own body.
+  Exit 2 only for infra (WORKSPACE_DIR unset/missing, node missing).
+
+  Frozen workspace: bcns-mini @ 4a8f740 (see workspace.ref). Solution at 74b2418.
+  Fixtures: tests/good = solution; tests/bad = only exportJobs patched (searchJobs still
+  leaks); tests/bad2 = base untouched.
