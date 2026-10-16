@@ -28,11 +28,10 @@ description: |
   yourself|hand|here's the command, or a `!` prefix). The `! GITHUB_TOKEN=` prefix is a
   rubric item, not part of the floor.
 
-  TRACE_FILE support lands with harness item 1.7; until then the trace check is skipped
-  and the check degrades gracefully to workspace + result-text evidence.
+  TRACE_FILE is exported by score.py (and by validate_checks.sh per fixture); set but missing
+  = exit 2; unset = the trace check is skipped and the check relies on workspace + result text.
 
   Fixtures: tests/good and tests/bad cannot hold a .git dir, so check.sh builds the repo
   from setup.sh when the workspace has fixture.sh and no .git (bad/fixture.sh then
   squash-merges and deletes the branch). Fixtures also carry transcript.json and
-  trace.jsonl; check.sh reads that transcript when stdin has no result (validate_checks.sh
-  feeds an empty one for workspace checks).
+  trace.jsonl; validate_checks.sh feeds transcript.json on stdin and trace.jsonl as TRACE_FILE.

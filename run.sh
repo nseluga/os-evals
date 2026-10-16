@@ -46,7 +46,7 @@ cd "$SCRIPT_DIR"
 TASKS=""                       # empty => auto-discover (minus print-date/_example)
 LAYERS=""
 MODELS="opus"
-MAX_BUDGET="1.50"
+MAX_BUDGET=""  # unset: run_matrix applies each task's meta.yaml cap, else 1.50
 SHAS=()
 DO_BUILD=1
 DRY_RUN=0
@@ -121,7 +121,7 @@ while [ -e "$SCORECARDS_DIR/${STAMP}.md" ] || [ -e "$SCORECARDS_DIR/${STAMP}.sco
     TS="$(date -u +%Y%m%dT%H%M%SZ)"
     STAMP="${TS}-${OS_SHA}"
 done
-echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  effort=$EFFORT  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
+echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  effort=$EFFORT  max-budget-usd=${MAX_BUDGET:-default}${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
 
 # --- Auto-discover tasks if none given (exclude the print-date smoke test) ---
 if [ -z "$TASKS" ]; then
@@ -160,9 +160,10 @@ else
     echo "run.sh: --no-build: reusing existing $CONFIGS_DIR"
 fi
 
-MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget-usd "$MAX_BUDGET"
+MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS"
     --jobs "$JOBS" --effort "$EFFORT"
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
+[ -n "$MAX_BUDGET" ] && MATRIX_ARGS+=(--max-budget-usd "$MAX_BUDGET")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
 MATRIX_ARGS+=(--window-usd "$WINDOW_USD")

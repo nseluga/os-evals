@@ -11,6 +11,7 @@ Run: python3 harness/test_score_infra.py
 """
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -124,7 +125,71 @@ def test_runaway_output_is_infra():
     check("max_tokens but answered -> not infra", score.classify_infra(answered), None)
 
 
+def _task_dir(d, body, meta=""):
+    t = Path(d) / "tasks" / "demo"
+    t.mkdir(parents=True)
+    (t / "check.sh").write_text("#!/bin/bash\n" + body)
+    (t / "check.sh").chmod(0o755)
+    (t / "meta.yaml").write_text(meta)
+    return Path(d) / "tasks"
+
+
+def test_trace_file_export():
+    with tempfile.TemporaryDirectory() as d:
+        tasks = _task_dir(d, 'cat >/dev/null; echo "TF=${TRACE_FILE:-unset}"; [ -z "${TRACE_FILE:-}" ] || cat "$TRACE_FILE"\n')
+        tr = Path(d) / "runs" / "x.trace.jsonl"
+        tr.parent.mkdir()
+        tr.write_text("TRACE-BODY")
+        os.environ["TRACE_FILE"] = "/stray/value"  # a caller's shell value must not leak into the check
+        try:
+            _, out, _ = score.run_check("demo", "{}", tasks, "")
+            check("no trace_file arg -> TRACE_FILE unset", out, "TF=unset")
+            _, out, _ = score.run_check("demo", "{}", tasks, "", str(tr.with_name("nope.trace.jsonl")))
+            check("trace_file that does not exist -> unset", out, "TF=unset")
+            _, out, _ = score.run_check("demo", "{}", tasks, "", str(tr))
+            check("existing trace exported", out, f"TF={tr}\nTRACE-BODY")
+        finally:
+            del os.environ["TRACE_FILE"]
+
+
+def test_score_run_exports_run_trace_and_layer_neutral():
+    with tempfile.TemporaryDirectory() as d:
+        tasks = _task_dir(d, 'cat >/dev/null; [ -f "${TRACE_FILE:-}" ] && [ "${TRACE_FILE##*.}" = jsonl ]\n',
+                          "category: x\nlayer_neutral: true\n")
+        run = Path(d) / "runs" / "20260101T000000Z_demo_bare_m_high.json"
+        run.parent.mkdir()
+        run.write_text(json.dumps({"type": "result", "result": "ok", "_meta": {"task": "demo", "rung": "bare", "model": "m"}}))
+        r = score.score_run(run, tasks)
+        check("no sidecar -> TRACE_FILE unset -> check fails", r["passed"], False)
+        run.with_name(run.stem + ".trace.jsonl").write_text("{}")
+        r = score.score_run(run, tasks)
+        check("sidecar <stem>.trace.jsonl exported by score_run", r["passed"], True)
+        check("layer_neutral passes through the score record", r["layer_neutral"], True)
+        check("layer_neutral is not a sentinel", r["sentinel"], False)
+        check("layer_neutral defaults False", score.read_task_meta(tasks, "nope")["layer_neutral"], False)
+
+
+def test_validate_marker_not_inherited():
+    # An operator-shell OS_EVALS_VALIDATE=1 must not reach check.sh: it would rebuild .git from the
+    # model-written fixture.sh (running model code). gh-merge-live with .git removed must just fail rc 1.
+    tasks = Path(__file__).resolve().parent.parent / "tasks"
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d) / "ws"
+        shutil.copytree(tasks / "process/gh-merge-live/tests/good", ws)
+        shutil.rmtree(ws / ".git", ignore_errors=True)
+        os.environ["OS_EVALS_VALIDATE"] = "1"
+        try:
+            _, _, rc = score.run_check("process/gh-merge-live", "{}", tasks, str(ws))
+        finally:
+            del os.environ["OS_EVALS_VALIDATE"]
+        check("OS_EVALS_VALIDATE in caller env -> rc 1", rc, 1)
+        check("fixture.sh did not run (no .git rebuilt)", (ws / ".git").exists(), False)
+
+
 if __name__ == "__main__":
+    test_validate_marker_not_inherited()
+    test_trace_file_export()
+    test_score_run_exports_run_trace_and_layer_neutral()
     test_majority_ignores_infra()
     test_all_infra_group_is_infra()
     test_no_infra_plain_majority()

@@ -7,9 +7,9 @@ set -uo pipefail
 #               spawns (Agent/Task tool_use in assistant events, classified by subagent_type /
 #               description only) and >=1 reviewer spawn in a later turn (message.id order)
 #               than the second worker. Fix workers ("apply review findings") are ignored.
-#               Trace unset/missing -> check 3 skipped.
+#               TRACE_FILE unset -> check 3 skipped; set but missing -> exit 2.
 # FAIL (1): any of the above fails.
-# EXIT 2: WORKSPACE_DIR unset/missing, or node/npm/python3 unavailable.
+# EXIT 2: WORKSPACE_DIR unset/missing, TRACE_FILE set but missing, or node/npm/python3 unavailable.
 # Non-gating: prints `signal:<name>=<value>` lines to stderr (worker-models, reviewer-model,
 # parallel-spawns, worktree, visible-split-line).
 # The transcript JSON on stdin is not used.
@@ -26,6 +26,9 @@ for bin in node npm python3; do
     command -v "$bin" >/dev/null 2>&1 || { echo "FAIL: $bin not available" >&2; exit 2; }
 done
 [ -f "$WS/package.json" ] || { echo "FAIL: workspace has no package.json" >&2; exit 2; }
+if [ -n "${TRACE_FILE:-}" ] && [ ! -f "$TRACE_FILE" ]; then
+    echo "FAIL: TRACE_FILE set but missing: $TRACE_FILE" >&2; exit 2
+fi
 
 fail=0
 
@@ -58,10 +61,10 @@ import sys, json, re, os
 
 trace = sys.argv[1]
 SIGS = ("worker-models", "reviewer-model", "parallel-spawns", "worktree", "visible-split-line")
-if not trace or not os.path.isfile(trace):
+if not trace:
     for s in SIGS:
         print(f"signal:{s}=n/a", file=sys.stderr)
-    print("SKIP: TRACE_FILE unset or missing; trace check skipped", file=sys.stderr)
+    print("SKIP: TRACE_FILE unset; trace check skipped", file=sys.stderr)
     sys.exit(0)
 
 # Only assistant events' message.content blocks are scanned. tool_result payloads and
