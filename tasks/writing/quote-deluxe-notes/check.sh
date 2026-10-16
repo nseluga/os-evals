@@ -53,11 +53,12 @@ if not re.search(r"\$\s?300\b", lc):
     fails.append("missing $300")
 
 # --- stale pricing (sentence-level; only sentences that disown it explicitly are fine) ---
-DISOWN = re.compile(
-    r"\b(retired|no longer|discontinued|stale|outdated|out of date|superseded|replaced|instead of|unlike|"
-    r"old(?:er)? (?:quote|file|proposal|pricing)|previous (?:quote|pricing)|july)\b"
-    r"|\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}(?:hourly|by the hour|per hour|standard|advanced)\b"
-    r"|n't\s+(?:\w+\s+){0,2}(?:hourly|by the hour|per hour|standard|advanced)\b")
+DISOWN = re.compile(  # sentence-level, tied to the old pricing itself
+    r"\b(retired|discontinued|stale|outdated|out of date|superseded)\b"
+    r"|\b(?:old(?:er)?|previous|prior|july)\s+(?:\w+\s+){0,1}(?:quote|file|proposal|pricing|tier|rates?)\b"
+    r"|\b(?:instead of|unlike|replac(?:ed|es|ing))\s+(?:the\s+)?(?:old|older|previous|july|standard|advanced|hourly|\$)"
+    r"|\bno longer\s+(?:\w+\s+){0,1}(?:offer|offered|available|sold|bill|billed|charge|charged|use|used|apply|applies|quote|current)")
+NEG_BEFORE = re.compile(r"(?:\b(?:no|not|never|without)|n't)\s+(?:\w+\s+){0,2}$")  # negation right before the match
 HOURLY = r"\bhourly\b|/\s?(?:hour|hr)\b|\bper (?:hour|hr)\b|\ban hour\b|\bby the hour\b"
 STALE = {
     "$250/month": r"\$\s?250\b",
@@ -70,7 +71,7 @@ for label, pat in STALE.items():
         s = max(lc.rfind(c, 0, m.start()) for c in ".!?\n") + 1
         ends = [i for i in (lc.find(c, m.end()) for c in ".!?\n") if i != -1]
         sentence = lc[s:min(ends) if ends else len(lc)]
-        if not DISOWN.search(sentence):
+        if not DISOWN.search(sentence) and not NEG_BEFORE.search(lc[max(0, m.start()-40):m.start()]):
             fails.append(f"stale pricing present: {label}")
             break
 
@@ -78,13 +79,17 @@ for label, pat in STALE.items():
 CUES = ["executive summary", "scope", "timeline", "pricing", "terms",
         "assumptions", "next steps", "deliverables", "support", "payment"]
 # Cues count only on heading lines: markdown '#', bold '**', <h1-6>, or a short title-like plain line
-# (<=50 chars, no trailing sentence punctuation, not a bullet or table row). Prose mentions do not count.
-def is_heading(l):
-    if re.match(r"\s*(#{1,6}\s|\*\*|<h[1-6])", l):
+# (blank line before, <=50 chars, no trailing punctuation or ">", not a bullet or table row, ALL CAPS or Title Case on the original text). Prose mentions do not count.
+def is_heading(l, prev):
+    if re.match(r"\s*(#{1,6}\s|<h[1-6])", l) or re.fullmatch(r"\s*\*\*[^*]+\*\*:?\s*", l):  # whole-line bold only
         return True
-    t = l.strip()
-    return bool(t) and len(t) <= 50 and not re.search(r"[.!?,;:]$", t) and not re.match(r"[|\-*+>]|\d+\)", t)
-heads = "\n".join(l for l in lc.splitlines() if is_heading(l))
+    t = l.strip()  # plain-text heading: standalone short line in ALL CAPS or Title Case
+    if not t or len(t) > 50 or prev.strip() or re.search(r"[.!?,;:>]$", t) or re.match(r"[|\-*+>]|\d+\)", t):
+        return False
+    words = [w for w in re.findall(r"[A-Za-z]+", t) if len(w) > 3]
+    return t == t.upper() or (bool(words) and all(w[0].isupper() for w in words))
+raw = text.splitlines()
+heads = "\n".join(l for i, l in enumerate(raw) if is_heading(l, raw[i-1] if i else "")).lower()
 hit = [c for c in CUES if c in heads]
 if len(hit) < 7:
     fails.append(f"only {len(hit)}/10 section cues ({', '.join(hit)})")
