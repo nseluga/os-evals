@@ -27,12 +27,19 @@ description: |
     7. Stop marker malformed: bare "**AUTONOMOUS RUN — STOP HERE**" with no blockquote '>'
        and no warning sign; must start '> **⚠️ AUTONOMOUS RUN — STOP HERE'.
 
-  Check rules (loose by design, any reasonable rewrite passes): guardrails fail only on soft
-  wording (try to, where possible, if possible, ideally, prefer, consider, should), so
-  invariants like "stays unchanged" pass; wrapped bullets join their first line; open
-  questions are TBD/TODO or a line ending in '?' outside backtick code spans; done-when
-  fails on vague words (works well, properly, correctly, as expected, robust, good) or no
-  concrete cue; caution/ui accept 'true' with a trailing '# comment'.
+  Check rules (loose by design, any reasonable rewrite passes):
+    - guardrails fail only on soft wording (try to, where possible, if possible, ideally,
+      prefer, consider, feasible, practical, as much as possible, aim to, a bare "should"),
+      so invariants like "stays unchanged" and "should never" pass;
+    - wrapped bullets join their first line;
+    - open questions fail on TBD/TODO (any case), a '?' followed by space or end of line, or
+      an explicit decide-later ("decide/pick ... later", "undecided"); backtick code spans
+      such as `?limit=1` are ignored;
+    - each item needs 2-4 done-when criteria, so deleting the vague one is not a fix;
+    - a done-when fails on vague words (works well, properly, as expected, as intended,
+      robust, fine, nicely, a bare "good") or when it has no concrete cue (test, returns,
+      status, stored, shows, persists, GET/POST, a digit ...);
+    - caution/ui accept 'true' with a trailing '# comment'.
 
   Check type: filesystem assertion via WORKSPACE_DIR; small python3 schema parser reads
   LANE.md. PASS (exit 0) iff no flaw remains; otherwise exit 1 with the remaining problems

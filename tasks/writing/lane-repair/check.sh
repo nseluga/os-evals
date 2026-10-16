@@ -108,13 +108,17 @@ for s, blk in items:
     CUE = re.compile(r"\b(tests?|exits?|return\w*|print\w*|files?|status|count|passes|passing|responds?|"
                      r"errors?|output|logs?|equals?|rows?|stored|shows?|contains?|persist\w*|GET|POST)\b"
                      r"|≥|≤|==|\d", re.I)
-    VAGUE = re.compile(r"\b(works? well|properly|correctly|as expected|robust\w*|good)\b", re.I)
-    for b in bullets(fields.get("done when", [])):
+    VAGUE = re.compile(r"\b(works? well|properly|as expected|as intended|robust\w*|fine|nicely)\b|(?<!-)\bgood\b", re.I)
+    dw = bullets(fields.get("done when", []))
+    if fields.get("done when") and len(dw) < 2:
+        problems.append(f"{label}: needs 2-4 done-when criteria, found {len(dw)}")
+    for b in dw:
         if VAGUE.search(b) or not CUE.search(b):
             problems.append(f"{label}: done-when not testable: {b!r}")
 
     # guardrails: prohibitions or invariants are fine; soft suggestions are not
-    SOFT = re.compile(r"\b(try to|where possible|if possible|ideally|prefer|consider|should)\b", re.I)
+    SOFT = re.compile(r"\b(try to|where possible|if possible|ideally|prefer|consider|feasible|practical|as much as possible|aim to)\b"
+                      r"|\bshould\b(?!\s+(never|not)\b)", re.I)
     for b in bullets(fields.get("guardrails", [])):
         if SOFT.search(b):
             problems.append(f"{label}: guardrail is a suggestion, not a prohibition: {b!r}")
@@ -126,11 +130,12 @@ for s, blk in items:
             if v != "true":
                 problems.append(f"{label}: '{key}:' must be 'true' or absent, got {v!r}")
 
-    # open questions: TBD/TODO, or a line that ends in '?' (code spans like ?limit=1 ignored)
+    # open questions: TBD/TODO, a '?' followed by space/end, or an explicit decide-later (code spans like ?limit=1 ignored)
     for l in blk:
         l2 = re.sub(r"`[^`]*`", "", l)
-        if re.search(r"\bTBD\b|\bTODO\b|\?\s*$", l2):
-            problems.append(f"{label}: open question (TBD/TODO/trailing '?') left in the item body")
+        if re.search(r"\bTBD\b|\bTODO\b|\?(\s|$)|\b(to be (decided|determined)|undecided|nobody has decided)\b"
+                     r"|\b(decide|pick|choose|determine)\b.{0,40}\b(later|during the build|at build time)\b", l2, re.I):
+            problems.append(f"{label}: open question (TBD/TODO/'?'/undecided) left in the item body")
             break
 
 for i, where in ids.items():
