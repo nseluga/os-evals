@@ -2,6 +2,7 @@ category: coding
 gate: capability
 contaminated: false
 group: clean
+judge_files: index.html
 curated_skill: dt-ui
 source: authored fixture (self-contained static HTML with a11y violations)
 description: |

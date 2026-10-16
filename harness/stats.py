@@ -688,6 +688,100 @@ def difficulty_anchors_section(scores: list[dict]) -> list[str]:
     return lines
 
 
+APPENDIX_REPO_ROOT = Path(__file__).parent.parent
+JUDGE_HEADER = (
+    "## Appendix: LLM judge (quarantined)",
+    "",
+    "_Opus judge scores (0-5) against per-task rubrics. Advisory only: nothing here feeds the "
+    "numbers above. Promotion rule: it may inform decisions only after >=40 decisive human pairs "
+    "over >=2 rounds, judge-vs-human κ >= 0.6, fixture validation >= 90 %, and an unchanged "
+    "`rubric_sha`._",
+    "",
+)
+
+
+def _judge_cells(scores: list[dict]) -> dict:
+    """(task, model, rung) -> (judge score or majority mean, passed) for valid, non-sentinel cells."""
+    cells = {}
+    for s in _effective_scores(scores):
+        if _is_sentinel(s) or _is_infra(s):
+            continue
+        v = s.get("judge_mean") if s.get("repeat_majority") else (s.get("judge") or {}).get("score")
+        if isinstance(v, (int, float)):
+            cells[(s["task"], s.get("model", ""), s["rung"])] = (float(v), bool(s.get("passed")))
+    return cells
+
+
+def _kappa_line(scores: list[dict], root: Path) -> str:
+    """judge-vs-Nate line: calls deck.kappa(picks, judge) when harness/deck.py exists (item 1.6)."""
+    deck = root / "harness" / "deck.py"
+    if not deck.is_file():
+        return "judge-vs-Nate: κ=n/a UNCALIBRATED (no deck)"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("deck", deck)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        picks = []
+        pf = root / "human" / "picks.jsonl"
+        if pf.is_file():
+            picks = [json.loads(ln) for ln in pf.read_text().splitlines() if ln.strip()]
+        judge = {Path(s["file"]).stem: s["judge"]["score"] for s in scores
+                 if isinstance(s.get("judge"), dict) and s.get("file")}
+        res = mod.kappa(picks, judge)
+        k, n = (res.get("kappa"), res.get("n")) if isinstance(res, dict) else (res, None)
+        if not isinstance(k, (int, float)):
+            return "judge-vs-Nate: κ=n/a UNCALIBRATED (no rated pairs)"
+        ok = k >= 0.6 and (n is None or n >= 40)
+        return f"judge-vs-Nate: κ={k:.2f} {'CALIBRATED' if ok else 'UNCALIBRATED'}"
+    except Exception as e:
+        return f"judge-vs-Nate: κ=n/a UNCALIBRATED (deck error: {e})"
+
+
+def judge_appendix(data: dict, root=None) -> list[str]:
+    """Quarantined appendix, rendered last. Reads only judge fields; never alters headline numbers."""
+    scores = data.get("scores", [])
+    root = Path(root) if root else APPENDIX_REPO_ROOT
+    lines = list(JUDGE_HEADER)
+    cells = _judge_cells(scores)
+    leaks = sum(1 for s in scores if isinstance(s.get("judge"), dict) and s["judge"].get("leak"))
+    if not cells:
+        lines += ["_no judged runs in this scorecard (run with `--judge`)_", ""]
+    else:
+        by_rung: dict = defaultdict(list)
+        for (_t, _m, rung), (v, _p) in cells.items():
+            by_rung[rung].append(v)
+        lines += ["| Rung | Mean judge score | N cells |", "|------|------------------|---------|"]
+        for rung in sorted(by_rung, key=_rung_key):
+            vs = by_rung[rung]
+            lines.append(f"| {_rl(rung)} | {sum(vs) / len(vs):.2f} | {len(vs)} |")
+        lines.append("")
+        pairs = select_pairs({r for (_t, _m, r) in cells}, data.get("layer_order"))
+        sep = []
+        for lo, hi in pairs:
+            w = l = ties = 0
+            for (t, m, r), (v, p) in cells.items():
+                if r != lo or (t, m, hi) not in cells:
+                    continue
+                v2, p2 = cells[(t, m, hi)]
+                gap = v2 - v
+                if gap >= 0.5:
+                    w += 1
+                elif gap <= -0.5:
+                    l += 1
+                else:
+                    ties += 1
+                if p == p2 and abs(gap) >= 1.0:
+                    sep.append(f"{t} [{m}] {_rl(lo)} to {_rl(hi)}: {gap:+.1f}")
+            lines.append(f"- judge sign-test {_rl(lo)} vs {_rl(hi)} (gap >= 0.5 = win): higher rung won "
+                         f"{sign_test(l, w, ties)}")
+        lines += ["", f"- check.sh ties the judge separates (|gap| >= 1.0): {len(sep)}"]
+        lines += [f"  - {x}" for x in sorted(sep)]
+    lines += [f"- judge leak count (rationale names a skill, CLAUDE.md or memory): {leaks}", "",
+              _kappa_line(scores, root), ""]
+    return lines
+
+
 def render_markdown(data: dict, stats: dict, token_stats: dict,
                     matrix_exit=None, planned=None, history_path=None) -> str:
     all_scores = data["scores"]
@@ -797,6 +891,8 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
     lines.append("")
 
     lines += difficulty_anchors_section(all_scores)
+
+    lines += judge_appendix(data)
 
     return "\n".join(lines) + "\n"
 

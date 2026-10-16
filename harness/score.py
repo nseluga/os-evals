@@ -191,6 +191,32 @@ def read_task_meta(tasks_dir: Path, task: str) -> dict:
     return out
 
 
+def list_run_files(runs_dir: Path) -> list[Path]:
+    """Transcripts to score. Sidecars (<stem>.judge.jsonl, <stem>.trace.jsonl) are never runs."""
+    return sorted(f for f in Path(runs_dir).glob("*.json") if ".judge." not in f.name and ".trace." not in f.name)
+
+
+def load_judge(run_file: Path):
+    """Latest verdict from <stem>.judge.jsonl as {score, rationale, leak, rubric_sha}, else None.
+    Quarantined: only ever attached as rec["judge"], never read by pass/fail logic."""
+    side = run_file.with_name(run_file.stem + ".judge.jsonl")
+    last = None
+    try:
+        for ln in side.read_text().splitlines():
+            try:
+                e = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and isinstance(e.get("score"), (int, float)):
+                last = e
+    except OSError:
+        return None
+    if last is None:
+        return None
+    return {"score": last["score"], "rationale": last.get("rationale", ""),
+            "leak": last.get("leak") or [], "rubric_sha": last.get("rubric_sha", "")}
+
+
 def score_run(run_file: Path, tasks_dir: Path) -> dict:
     """Score one transcript file. Returns a score record."""
     transcript_text = run_file.read_text()
@@ -252,6 +278,9 @@ def score_run(run_file: Path, tasks_dir: Path) -> dict:
         "repeat_total": repeat_total,
         **stats,
     }
+    judge = load_judge(run_file)
+    if judge:
+        base["judge"] = judge
 
     # A run whose tool calls reached outside its workspace (task files, live ~/os, the
     # origin repo) is contaminated: it is neither a model failure nor an infra failure.
@@ -481,6 +510,11 @@ def compute_majority_records(scores: list[dict]) -> list[dict]:
             "repeat_total": declared_total,
             "repeat_index": None,
         }
+        majority_record.pop("judge", None)
+        judged = [r["judge"]["score"] for r in valid_members if r.get("judge")]
+        if judged:
+            majority_record["judge_mean"] = round(sum(judged) / len(judged), 3)
+            majority_record["judge_n"] = len(judged)
         majority_records.append(majority_record)
         tag = "INFRA" if group_infra else ("PASS" if majority_passed else "FAIL")
         print(
@@ -502,7 +536,7 @@ def main() -> int:
     runs_dir = Path(args.runs_dir)
     tasks_dir = Path(args.tasks_dir)
 
-    run_files = sorted(runs_dir.glob("*.json"))
+    run_files = list_run_files(runs_dir)
     if not run_files:
         print("score.py: no run files found", file=sys.stderr)
         return 1

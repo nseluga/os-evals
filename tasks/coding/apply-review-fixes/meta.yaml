@@ -2,6 +2,7 @@ category: coding
 gate: capability
 contaminated: false
 group: clean
+judge_files: handler.py
 curated_skill: dt-fix
 source: authored fixture (self-contained; review report + flawed code)
 description: |

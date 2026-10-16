@@ -19,6 +19,7 @@ set -euo pipefail
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
 #   ./run.sh --effort low,high            # effort axis (low|medium|high|xhigh|max, default high)
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
+#   ./run.sh --judge                      # after the matrix, grade rubric tasks with the Opus judge (appendix only)
 #
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
 # a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
@@ -46,6 +47,7 @@ JOBS=1
 WS_ROOT=""
 REPEAT=""
 EFFORT="high"
+JUDGE=0
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -64,6 +66,7 @@ while [ $# -gt 0 ]; do
         --clean-ws) CLEAN_WS=1; shift;;
         --repeat) REPEAT="$2"; shift 2;;
         --effort) EFFORT="$2"; shift 2;;
+        --judge) JUDGE=1; shift;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
@@ -152,7 +155,16 @@ MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run
+    DRY_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run)" || { echo "$DRY_OUT"; exit 1; }
+    echo "$DRY_OUT"
+    if [ "$JUDGE" -eq 1 ]; then   # the matrix FITS estimate does not price judge calls: print their count and cap
+        JN=0
+        while IFS= read -r l; do
+            t="${l#  }"; t="${t%%:*}"
+            [ -f "$TASKS_DIR/$t/rubric.md" ] && JN=$((JN + ${l##*= }))
+        done < <(echo "$DRY_OUT" | grep -E '^  [^ :]+: .* = [0-9]+$')
+        echo "run.sh: --judge adds up to $JN Opus judge calls (rubric tasks x planned runs), cap \$0.50 each, not in the estimate above"
+    fi
     echo "run.sh: dry run only (nothing invoked, scored, or written to runs/)"
     exit 0
 fi
@@ -170,7 +182,7 @@ mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"
 
 # --- Archive (move, never delete) prior transcripts + workspaces so they are not scored ---
 shopt -s nullglob
-prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.ws)
+prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.judge.jsonl "$RUNS_DIR"/*.ws)
 shopt -u nullglob
 if [ "${#prior[@]}" -gt 0 ]; then
     ARCHIVE="$RUNS_DIR/archive/$TS"
@@ -195,6 +207,14 @@ shopt -u nullglob
 if [ "${#produced[@]}" -eq 0 ]; then
     echo "run.sh: ERROR the matrix produced no transcripts; no scorecard written" >&2
     exit 1
+fi
+
+# --- 2b. Optional LLM judge. Before scoring (score.py joins the sidecars) and before any
+# workspace cleanup (the judge reads judge_files: from the workspaces). Never fatal. ---
+if [ "$JUDGE" -eq 1 ]; then
+    echo "run.sh: judging rubric tasks (quarantined appendix)..."
+    python3 "$SCRIPT_DIR/harness/judge.py" --runs-dir "$RUNS_DIR" --tasks-dir "$TASKS_DIR" \
+        --configs-dir "$CONFIGS_DIR" --jobs "$JOBS" || echo "run.sh: WARNING judge exited non-zero; scorecard has partial or no appendix data" >&2
 fi
 
 # --- 3. Score every transcript in runs/ ---
