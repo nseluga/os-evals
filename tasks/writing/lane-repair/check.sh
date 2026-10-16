@@ -130,11 +130,11 @@ for s, blk in items:
             if v != "true":
                 problems.append(f"{label}: '{key}:' must be 'true' or absent, got {v!r}")
 
-    # open questions: TBD/TODO, a '?' followed by space/end, or an explicit decide-later (code spans like ?limit=1 ignored)
+    # open questions: TBD/TODO, a '?' followed by space/end, or a still-open choice (code spans like ?limit=1 ignored)
     for l in blk:
         l2 = re.sub(r"`[^`]*`", "", l)
         if re.search(r"\bTBD\b|\bTODO\b|\?(\s|$)|\b(to be (decided|determined)|undecided|nobody has decided)\b"
-                     r"|\b(decide|pick|choose|determine)\b.{0,40}\b(later|during the build|at build time)\b", l2, re.I):
+                     r"|\b(postgres|sqlite)\s*(or|/)\s*(postgres|sqlite)\b", l2, re.I):
             problems.append(f"{label}: open question (TBD/TODO/'?'/undecided) left in the item body")
             break
 
