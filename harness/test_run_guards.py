@@ -106,9 +106,91 @@ def test_meta_no_result_and_trace():
     check("timeout -> no_result False", t["_meta"]["no_result"], False)
 
 
+def _fake_security(d, code, marker):
+    """A `security` on PATH that records the call and exits `code` (44 = item not found)."""
+    bin_ = Path(d) / "bin"
+    bin_.mkdir()
+    (bin_ / "security").write_text(f"#!/bin/sh\necho called >> {marker}\n"
+                                   f"{'echo fake-token' if code == 0 else ''}\nexit {code}\n")
+    (bin_ / "security").chmod(0o755)
+    return str(bin_)
+
+
+def test_token_keychain():
+    import os
+    with tempfile.TemporaryDirectory() as d:
+        marker = Path(d) / "calls"
+        bin_ = _fake_security(d, 44, marker)
+        base = _fixture(d)
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+        env["PATH"] = f"{bin_}:{os.environ['PATH']}"
+
+        def cli(*a, **extra):
+            return subprocess.run([sys.executable, str(RM), *a], capture_output=True, text=True, env={**env, **extra})
+
+        r = cli(*base, "--tasks", "ok", "--layers", "bare")
+        check("dry-run needs no keychain", (r.returncode, marker.exists()), (0, False))
+        live = [a for a in base if a != "--dry-run"]
+        r = cli(*live, "--tasks", "ok", "--layers", "bare")
+        check("missing keychain item exits 2", r.returncode, 2)
+        assert "os-evals-claude-token" in r.stderr and "security add-generic-password" in r.stderr, r.stderr
+        check("keychain was asked", marker.exists(), True)
+        check("no run dir made before failing", (Path(d) / "ws").exists(), False)
+
+        # env override: the keychain is never consulted
+        marker.unlink()
+        run_matrix._TOKEN = None
+        old = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"), os.environ["PATH"]
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"], os.environ["PATH"] = "from-env", env["PATH"]
+        try:
+            check("env override wins", run_matrix.oauth_token(), "from-env")
+            check("env override skips keychain", marker.exists(), False)
+            # no override + working keychain: read once, cached
+            del os.environ["CLAUDE_CODE_OAUTH_TOKEN"]
+            run_matrix._TOKEN = None
+            (Path(bin_) / "security").write_text(f"#!/bin/sh\necho called >> {marker}\necho kc-token\n")
+            check("keychain read", run_matrix.oauth_token(), "kc-token")
+            run_matrix.oauth_token()
+            check("keychain read once per process", marker.read_text().count("called"), 1)
+        finally:
+            run_matrix._TOKEN = None
+            os.environ["PATH"] = old[1]
+            if old[0] is not None:
+                os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = old[0]
+
+
+def test_token_injected():
+    import subprocess as sp
+    seen = {}
+    for layer in ("bare", "full"):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "tasks" / "t").mkdir(parents=True)
+            (d / "tasks" / "t" / "prompt.md").write_text("hi")
+            (d / "configs" / layer).mkdir(parents=True)
+            (d / "configs" / layer / "rung.env").write_text("HOME=/h\n")
+
+            def fake(cmd, **kw):
+                seen[layer] = kw["env"]
+                return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+            orig, run_matrix._TOKEN, sp.run = sp.run, "tok-123", fake
+            try:
+                run_matrix.run_one("t", layer, "m", d / "tasks", d / "configs", d / "runs", ws_root=d / "ws")
+            finally:
+                sp.run, run_matrix._TOKEN = orig, None
+    check("full gets OAuth name only", (seen["full"].get("CLAUDE_CODE_OAUTH_TOKEN"), "ANTHROPIC_AUTH_TOKEN" in seen["full"]),
+          ("tok-123", False))
+    check("bare gets both names", (seen["bare"].get("CLAUDE_CODE_OAUTH_TOKEN"), seen["bare"].get("ANTHROPIC_AUTH_TOKEN")),
+          ("tok-123", "tok-123"))
+    check("rung.env HOME kept", seen["full"]["HOME"], "/h")
+
+
 if __name__ == "__main__":
     test_parser_survives_junk()
     test_guards()
     test_load_rung_missing()
     test_meta_no_result_and_trace()
+    test_token_keychain()
+    test_token_injected()
     print("ALL PASS")

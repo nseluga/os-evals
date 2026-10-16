@@ -19,6 +19,12 @@ set -euo pipefail
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
 #
+# Auth: the OAuth token lives only in macOS keychain item `os-evals-claude-token` (never on disk);
+# run_matrix reads it once per run and injects CLAUDE_CODE_OAUTH_TOKEN into each claude process
+# (--dry-run needs no token). CLAUDE_CODE_OAUTH_TOKEN already in the environment overrides the
+# keychain read (non-Mac/CI path; the memory hook's nested session still reads the keychain only).
+# Missing both -> run_matrix exits 2 naming the `security add-generic-password` fix.
+#
 # Each run gets <ws-root>/w-<hex>/ with w/ (its cwd) and cfg/ (its own CLAUDE_CONFIG_DIR,
 # a clean copy of configs/<sha>/<layer>/), so no run can read another run's transcripts.
 #

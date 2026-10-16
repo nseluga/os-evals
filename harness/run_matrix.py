@@ -58,6 +58,30 @@ REPO_ROOT = Path(__file__).parent.parent
 OPUS_COST_MULTIPLIER = 4.0  # rough guess: Opus $/run vs the Sonnet history; not measured
 
 
+KEYCHAIN_ITEM = "os-evals-claude-token"
+_TOKEN = None  # read once per process by oauth_token(); run_one injects it into the claude env
+
+
+def oauth_token() -> str:
+    """CLAUDE_CODE_OAUTH_TOKEN from the environment (non-Mac/CI override), else the keychain item.
+    Cached for the process. Raises RuntimeError (no token in the message) if neither has one."""
+    global _TOKEN
+    if _TOKEN is None:
+        tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        if not tok:
+            try:
+                r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"],
+                                   capture_output=True, text=True)
+                tok = r.stdout.strip() if r.returncode == 0 else ""
+            except OSError:
+                tok = ""
+        if not tok:
+            raise RuntimeError(f"no auth token: keychain item {KEYCHAIN_ITEM!r} missing and CLAUDE_CODE_OAUTH_TOKEN unset; "
+                               f"fix: security add-generic-password -a os-evals -s {KEYCHAIN_ITEM} -w <token>")
+        _TOKEN = tok
+    return _TOKEN
+
+
 def find_tasks(tasks_dir: Path, include_non_default: bool = True) -> list[str]:
     """Task ids are paths (relative to tasks_dir) of any dir holding a prompt.md.
 
@@ -393,8 +417,8 @@ def build_run_config(template: Path, cfg: Path) -> None:
     symlinks recreated with the same targets. Everything else Claude Code writes into a
     config dir (projects/*.jsonl transcripts, sessions/, backups/, .claude.json, ...) and
     rung.flags stay behind, so no run sees another run's answers. rung.env is rewritten with
-    CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for the auth
-    token (Claude Code doesn't pass it to hooks), and its nested session must stay per-run."""
+    CLAUDE_CONFIG_DIR=cfg: the memory hook sources "$CLAUDE_CONFIG_DIR/rung.env" for HOME/config
+    dir (the token comes from the keychain, never this file), and its nested session must stay per-run."""
     import shutil
     shutil.rmtree(cfg, ignore_errors=True)
     cfg.mkdir(parents=True)
@@ -488,6 +512,10 @@ def run_one(
 
     # Only the claude subprocess gets the scrubbed env (setup.sh/restore keep the real one).
     env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
+    if _TOKEN:  # set by main(); bare also gets ANTHROPIC_AUTH_TOKEN (unconfirmed whether --bare reads the OAuth name)
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = _TOKEN
+        if layer == "bare":
+            env["ANTHROPIC_AUTH_TOKEN"] = _TOKEN
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}"
@@ -828,6 +856,12 @@ def main() -> int:
             print(f"  no history (median of others used): {', '.join(est['no_history'])}")
         print(f"jobs: {jobs}  workspaces: {os.path.abspath(ws_root)}")
         return 0
+
+    try:
+        oauth_token()  # fail fast, before any workspace is made; --dry-run above never needs it
+    except RuntimeError as e:
+        print(f"run_matrix: ERROR {e}", file=sys.stderr)
+        return 2
 
     ws_root.mkdir(parents=True, exist_ok=True)
 
