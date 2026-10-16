@@ -40,6 +40,26 @@ def test_ab_pairing_with_sentinel_bare():
           [("full@A", "full@B")])
 
 
+def test_variant_pairs_after_ladder():
+    allr = {"bare", "memory", "memory~nohook", "skills", "skills~ko.quote"}
+    order = ["bare", "memory", "memory~nohook", "skills", "skills~ko.quote"]
+    check("variant pairs (variant, base) after ladder pairs", stats.select_pairs(allr, order),
+          [("bare", "memory"), ("memory", "skills"), ("memory~nohook", "memory"), ("skills~ko.quote", "skills")])
+    check("variant alone with its base", stats.select_pairs({"memory", "memory~nohook"}, ["memory", "memory~nohook"]),
+          [("memory~nohook", "memory")])
+    check("no order: variant still paired", stats.select_pairs({"bare", "memory", "memory~nohook"}),
+          [("bare", "memory"), ("memory~nohook", "memory")])
+    check("variant without its base is not paired", stats.select_pairs({"bare", "memory~nohook"}, ["bare", "memory~nohook"]),
+          [("bare", "memory~nohook")])
+    check("_rung_key sorts variant right after base",
+          sorted(["skills", "memory~nohook", "memory", "bare"], key=stats._rung_key),
+          ["bare", "memory", "memory~nohook", "skills"])
+    rows = [_row("t1", "memory", True), _row("t1", "memory~nohook", False),
+            _row("t2", "memory", True), _row("t2", "memory~nohook", True)]
+    st = stats.compute_stats(rows, ["memory", "memory~nohook"])
+    check("variant pair key", list(st["rung_pairs"]["m"]), ["memory~nohook_vs_memory"])
+
+
 def test_legacy_int_pairs():
     check("legacy", stats.select_pairs({1, 2, 3, 4}), [(1, 2), (2, 3), (3, 4), (1, 4)])
 
@@ -288,6 +308,7 @@ if __name__ == "__main__":
     test_pairs_follow_user_order()
     test_ab_pairing_with_sentinel_bare()
     test_legacy_int_pairs()
+    test_variant_pairs_after_ladder()
     test_non_adjacent_layers_compare_and_empty_message()
     test_filename_round_trip()
     test_score_effort_and_model_usage()

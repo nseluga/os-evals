@@ -57,6 +57,39 @@ def test_guards():
         check("valid plan exits 0", r.returncode, 0)
 
 
+def test_variant_guards():
+    """Knockout variants: four rc-2 preflight refusals, plus the accepted shapes."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        for layer in ("claude-md", "memory", "skills"):
+            (Path(d) / "configs" / layer).mkdir()
+        (Path(d) / "configs" / "src" / "skills" / "quote").mkdir(parents=True)
+        run = lambda layers: _cli(*base, "--tasks", "ok", "--layers", layers)  # noqa: E731
+        for label, layers, want in [
+            ("unknown mod", "memory,memory~nope", "unknown variant 'nope'"),
+            ("nohook on bare", "bare,bare~nohook", "nohook needs a base with the memory hook"),
+            ("nohook on claude-md", "claude-md,claude-md~nohook", "nohook needs a base with the memory hook"),
+            ("ko of a missing skill", "skills,skills~ko.ghost", "no skill 'ghost'"),
+            ("ko on a base without skills", "memory,memory~ko.quote", "ko.<skill> needs a base with skills"),
+            ("variant base not in --layers", "bare,memory~nohook", "needs its base 'memory'"),
+        ]:
+            r = run(layers)
+            check(f"{label} exits 2", r.returncode, 2)
+            assert want in r.stderr, (label, r.stderr)
+        for label, layers in [("nohook", "memory,memory~nohook"), ("ko.quote", "skills,skills~ko.quote")]:
+            r = run(layers)
+            check(f"{label} plan exits 0", r.returncode, 0)
+            assert f"cells=['{layers.split(',')[0]}', '{layers.split(',')[1]}']" in r.stdout, r.stdout
+
+
+def test_ko_runs_only_on_curated_task():
+    check("curated token matches", run_matrix.variant_applies("skills~ko.quote", "quote"), True)
+    check("'none (…)' does not match", run_matrix.variant_applies("skills~ko.quote", "none (proves the skills layer loads)"), False)
+    check("other skill does not match", run_matrix.variant_applies("full~ko.quote", "dt-qa"), False)
+    check("nohook and plain layers always apply",
+          [run_matrix.variant_applies(x, "none (x)") for x in ("memory~nohook", "full")], [True, True])
+
+
 def test_load_rung_missing():
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "sha" / "bare").mkdir(parents=True)
@@ -88,7 +121,7 @@ def _run_one(stdout, timed_out=False, info=None, **kw_run):
         orig = sp.run
         sp.run = fake
         try:
-            out = run_matrix.run_one("t", "bare", "m", d / "tasks", d / "configs", d / "runs",
+            out = run_matrix.run_one("t", kw_run.pop("layer", "bare"), "m", d / "tasks", d / "configs", d / "runs",
                                      ws_root=d / "ws", **kw_run)
         finally:
             sp.run = orig
@@ -217,6 +250,17 @@ def test_pre18_snapshot():
         check("dry run on old snapshot warns, exits 0", (r.returncode, "WARNING pre-1.8" in r.stdout), (0, True))
 
 
+def test_variant_meta():
+    res = '{"type":"result","is_error":false,"result":"ok","usage":{"output_tokens":3}}\n'
+    info = {}
+    t, _ = _run_one(res, info=info, layer="bare~nohook")
+    m = t["_meta"]
+    check("_meta layer=base, variant, rung=full spec", (m["layer"], m["variant"], m["rung"]), ("bare", "nohook", "bare~nohook"))
+    check("run id embeds the full spec", "_bare~nohook_m_high.json" in info["name"], True)
+    t, _ = _run_one(res)
+    check("plain layer: variant empty", (t["_meta"]["layer"], t["_meta"]["variant"], t["_meta"]["rung"]), ("bare", "", "bare"))
+
+
 def test_effort_in_run_id_and_meta():
     init = '{"type":"system","subtype":"init","model":"claude-haiku-9-9"}\n'
     res = '{"type":"result","is_error":false,"result":"ok","usage":{"output_tokens":3}}\n'
@@ -235,7 +279,10 @@ def test_effort_in_run_id_and_meta():
 if __name__ == "__main__":
     test_parser_survives_junk()
     test_guards()
+    test_variant_guards()
+    test_ko_runs_only_on_curated_task()
     test_load_rung_missing()
+    test_variant_meta()
     test_meta_no_result_and_trace()
     test_token_keychain()
     test_token_injected()

@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "bcns-mini read API",
+  "definitions": {
+    "Job": {
+      "type": "object",
+      "required": ["id", "client_id", "source", "title", "status", "amount_cents", "day"],
+      "properties": {
+        "id": { "type": "string" },
+        "client_id": { "type": "string" },
+        "source": { "type": "string", "enum": ["monday", "shopify-lite"] },
+        "title": { "type": "string" },
+        "status": { "type": "string" },
+        "amount_cents": { "type": "integer" },
+        "day": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      }
+    },
+    "JobList": {
+      "type": "object",
+      "required": ["items", "total", "offset"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/definitions/Job" } },
+        "total": { "type": "integer" },
+        "offset": { "type": "integer" }
+      }
+    }
+  }
+}
