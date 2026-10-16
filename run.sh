@@ -211,6 +211,8 @@ mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"
 shopt -s nullglob
 prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.judge.jsonl "$RUNS_DIR"/*.ws)
 shopt -u nullglob
+# runs/superseded/ (stale transcripts a --resume re-ran) belongs to the night it was made in: archive it with the rest.
+[ ! -d "$RUNS_DIR/superseded" ] || prior+=("$RUNS_DIR/superseded")
 if [ "$RESUME" -eq 1 ]; then
     echo "run.sh: --resume: keeping ${#prior[@]} prior run artifacts in place (no archive, no build)"
 elif [ "${#prior[@]}" -gt 0 ]; then
@@ -281,8 +283,9 @@ if [ "$CLEAN_WS" -eq 1 ] && [ -s "$SCORECARD" ]; then
     python3 - "$RUNS_DIR" <<'PY'
 import json, re, shutil, sys
 from pathlib import Path
-# runs/ holds only this invocation's transcripts (prior ones were archived above).
-for f in Path(sys.argv[1]).glob("*.json"):
+# runs/ holds only this invocation's transcripts (prior ones were archived above), plus runs/superseded/
+# (rate-limited runs a --resume re-ran): their workspaces are cleaned too. runs/archive/ is never read.
+for f in [*Path(sys.argv[1]).glob("*.json"), *Path(sys.argv[1]).glob("superseded/*.json")]:
     try:
         ws = json.loads(f.read_text()).get("_meta", {}).get("workspace_dir", "")
     except ValueError:

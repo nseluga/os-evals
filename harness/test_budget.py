@@ -249,19 +249,186 @@ def test_model_family_keys():
           [it["model"] for it, _ in order], ["claude-sonnet-4-6", "opus"])
 
 
-def test_latest_scores():
+def _write_scores(d, name, recs):
+    Path(d, name).write_text(json.dumps({"scores": recs}))
+
+
+def test_stamped_scorecards():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         # mtime order is the reverse of the stamp order, and the aggregates are newest by mtime
-        for i, (name, tag) in enumerate([("20261003T000000Z-ccc.rescored.scores.json", "rescored"),
-                                          ("MERGED-aaa.scores.json", "merged"),
-                                          ("20261001T000000Z-aaa.scores.json", "old"),
-                                          ("20261002T000000Z-bbb.scores.json", "newest")][::-1]):
-            (d / name).write_text(json.dumps({"scores": [{"tag": tag}]}))
+        for i, name in enumerate(["20261003T000000Z-ccc.rescored.scores.json", "MERGED-aaa.scores.json",
+                                  "20261001T000000Z-aaa.scores.json", "20261002T000000Z-bbb.scores.json",
+                                  "20261002T000000Z-bbb.rescored.scores.json", "20261001T000000Z-aaa.md"][::-1]):
+            (d / name).write_text("{}")
             os.utime(d / name, (1000 + i, 1000 + i))
+        check("newest stamp first; original before its rescored copy; MERGED and non-scores files skipped",
+              [f.name for f in rm.stamped_scorecards(d)],
+              ["20261003T000000Z-ccc.rescored.scores.json", "20261002T000000Z-bbb.scores.json",
+               "20261002T000000Z-bbb.rescored.scores.json", "20261001T000000Z-aaa.scores.json"])
+    check("no scorecards dir", rm.stamped_scorecards(Path("/nonexistent-scorecards")), [])
+
+
+def test_history_discriminating():
+    """overnight.sh writes one scores file per stage: canary, verdict-opus, verdict-sonnet (newest). A single
+    newest file would hold only sonnet keys; the set must come from all stages, first (newest) hit per key."""
+    def pair(task, model, bare, full, **kw):
+        return [rec(task, "bare", model, 1, passed=bare, **kw), rec(task, "full", model, 1, passed=full, **kw)]
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        _write_scores(d, "20261002T100003Z-aaa.scores.json",  # canary stage: both models, canary tasks
+                      pair("canary/x", "opus", False, True) + pair("canary/x", "sonnet", False, True))
+        _write_scores(d, "20261002T100500Z-aaa.scores.json",  # verdict-opus
+                      pair("g/t1", "claude-opus-4-8", False, True) + pair("g/t2", "claude-opus-4-8", True, True))
+        _write_scores(d, "20261002T110000Z-aaa.scores.json",  # verdict-sonnet (newest): sonnet keys only
+                      pair("g/t3", "claude-sonnet-4-6", False, True) + [rec("g/t1", "bare", "claude-sonnet-4-6", 1, passed=True)])
+        want = {("canary/x", "opus"), ("canary/x", "sonnet"), ("g/t1", "opus"), ("g/t3", "sonnet")}
+        check("all three stages feed the set (a single newest file would give only g/t3)", rm.history_discriminating(d), want)
+
+        # older night: says g/t2 opus and g/t1 sonnet differ; newer night already decided g/t2 opus (flat), and g/t1 sonnet
+        # has only ONE layer in the newer file, so the older one is its first >=2-layer file.
+        _write_scores(d, "20261001T000000Z-old.scores.json",
+                      pair("g/t2", "opus", False, True) + pair("g/t1", "sonnet", False, True))
+        check("first (newest) file with >= 2 layers decides; a 1-layer file does not shadow",
+              rm.history_discriminating(d), want | {("g/t1", "sonnet")})
+
+        # MERGED aggregate and unparseable files are ignored; a rescored copy is the only copy of an old run
+        _write_scores(d, "MERGED-zzz.scores.json", pair("m/x", "opus", False, True))
         (d / "20261004T000000Z-bad.scores.json").write_text("{not json")
-        check("newest stamp wins; MERGED, rescored and unparseable skipped", rm.latest_scores(d), [{"tag": "newest"}])
-    check("no scorecards dir", rm.latest_scores(Path("/nonexistent-scorecards")), [])
+        _write_scores(d, "20260901T000000Z-316c160.rescored.scores.json", pair("r/only", "opus", False, True))
+        # same stamp: the original (flat) beats its rescored copy (differs)
+        _write_scores(d, "20260902T000000Z-abc.scores.json", pair("r/tie", "opus", True, True))
+        _write_scores(d, "20260902T000000Z-abc.rescored.scores.json", pair("r/tie", "opus", False, True))
+        got = rm.history_discriminating(d)
+        check("rescored-only run counted", ("r/only", "opus") in got, True)
+        check("original wins a same-stamp tie against its rescored copy", ("r/tie", "opus") in got, False)
+        check("MERGED aggregate ignored", ("m/x", "opus") in got, False)
+        check("infra rows do not count as a layer", rm.discriminating_set(
+            [rec("i", "bare", "opus", 1, passed=False, infra=True), rec("i", "full", "opus", 1)]), set())
+
+
+def test_family_ratios_one_figure():
+    """claude-opus-4-8 sorts before the alias `opus`: the old re-key kept its 0.9x for every opus item."""
+    hist = [rec("a", "bare", "sonnet", 1.0), rec("a", "bare", "claude-opus-4-8", 0.9),
+            rec("b", "bare", "sonnet", 1.0), rec("b", "bare", "opus", 2.4),
+            rec("d", "bare", "sonnet", 2.0)]
+    r = rm.family_ratios(hist)
+    check("one pooled median per family (0.9x and 2.4x -> 1.65x)", (sorted(r), round(r["opus"], 4)), (["opus"], 1.65))
+    est = rm.estimate_items(hist, [item("d", "bare", "opus"), item("d", "bare", "claude-opus-4-8")])
+    check("estimator uses that same ratio (sonnet 2.0 x 1.65)",
+          [(round(e["est"], 4), e["source"]) for e in est], [(3.3, "sonnet-ratio"), (3.3, "sonnet-ratio")])
+    # the dry-run prints the same figure
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "tasks" / "d").mkdir(parents=True)
+        (d / "tasks" / "d" / "meta.yaml").write_text("")
+        (d / "configs" / "bare").mkdir(parents=True)
+        (d / "sc").mkdir()
+        _write_scores(d / "sc", "20261001T000000Z-aaa.scores.json", hist)
+        out = io.StringIO()
+        orig = sys.argv
+        sys.argv = ["run_matrix.py", "--dry-run", "--tasks", "d", "--layers", "bare", "--models", "opus,claude-opus-4-8,sonnet",
+                    "--tasks-dir", str(d / "tasks"), "--config-dir", str(d / "configs"), "--runs-dir", str(d / "runs"),
+                    "--scorecards-dir", str(d / "sc")]
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = rm.main()
+        finally:
+            sys.argv = orig
+        lines = out.getvalue().splitlines()
+        check("dry-run rc", rc, 0)
+        check("dry-run prints the estimator's ratio for the alias and for the full id",
+              [l for l in lines if l.startswith("measured cost ratio")],
+              ["measured cost ratio opus vs sonnet: 1.65x (median, matched cells)",
+               "measured cost ratio claude-opus-4-8 vs sonnet: 1.65x (median, matched cells)"])
+
+
+def test_knockout_variant_is_its_own_layer():
+    # discriminating: a knockout that flips the verdict is a layer of its own, not pooled with its base
+    flip = [rec("t", "skills", "opus", 1, passed=True), rec("t", "skills~ko.x", "opus", 1, passed=False),
+            rec("t", "bare", "opus", 1, passed=True)]
+    check("variant vs base pass/fail differ -> discriminating", rm.discriminating_set(flip), {("t", "opus")})
+    same = [rec("t", "skills", "opus", 1), rec("t", "skills~ko.x@abc", "opus", 1), rec("t", "skills@abc", "opus", 1)]
+    check("@sha is stripped: same verdicts -> not discriminating", rm.discriminating_set(same), set())
+    # estimator: a variant that never ran is NOT 'measured'
+    hist = [rec("t", "skills", "opus", 4.0), rec("u", "bare", "opus", 8.0)]
+    est = rm.estimate_items(hist, [item("t", "skills~ko.x", "opus"), item("t", "skills", "opus"),
+                                   item("t", "skills~ko.x", "opus", "low"), item("t", "full~nohook", "opus"),
+                                   item("v", "skills~ko.x", "opus")])
+    got = [(e["est"], e["source"]) for e in est]
+    check("unrun variant -> its base layer's cost, labelled base-layer", got[0], (4.0, "base-layer"))
+    check("the base layer itself stays measured", got[1], (4.0, "measured"))
+    check("base-layer fallback at another effort uses the base's no-effort mean", got[2], (4.0, "base-layer"))
+    check("variant whose base never ran: median fallback, not measured", got[3][1], "global-median")
+    check("no data for that task: median of the base layer's opus cells", got[4], (4.0, "layer-model-median"))
+    check("base-layer counts as UNMEASURED", "base-layer" in rm.UNMEASURED_SOURCES, True)
+    fits = rm.fit_block([(it, e) for it, e in zip([item("t", "skills~ko.x", "opus")], est[:1])], 100.0)
+    check("fit block counts it", any(l.startswith("UNMEASURED cells: 1") for l in fits), True)
+    # once the variant has run, it is measured under its own layer spec (A/B @sha stripped)
+    hist2 = hist + [rec("t", "skills~ko.x@abc", "opus", 6.0)]
+    est = rm.estimate_items(hist2, [item("t", "skills~ko.x", "opus"), item("t", "skills", "opus")])
+    check("run variant measured on its own cost; base unaffected", [(e["est"], e["source"]) for e in est],
+          [(6.0, "measured"), (4.0, "measured")])
+
+
+def test_supersede_runs_paths():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        old = ["20261015T010000Z_t_opus[1m]_high", "20261015T020000Z_t_bare_m_high_r1", "20261015T030000Z_t_bare_m_high_r1"]
+        keep = ["20261015T020000Z_t_bare_m_high_r10", "20261015T020000Z_t_bare_m_high_r1x", "20261015T020000Z_t_opus1m_high"]
+        for stem in old + keep:
+            (d / f"{stem}.json").write_text("{}")
+            (d / f"{stem}.trace.jsonl").write_text("{}")
+        paths = [d / f"{s}.json" for s in old]
+        rm.supersede_runs(d, paths)
+        check("a '[' in the stem still moves its transcript and sidecar; every stale path per stem moves",
+              sorted(p.name for p in (d / "superseded").iterdir()),
+              sorted(f"{s}{x}" for s in old for x in (".json", ".trace.jsonl")))
+        check("_r1 does not take _r10 / _r1x / a '[1m]'-lookalike with it",
+              sorted(p.name for p in d.iterdir() if p.is_file()),
+              sorted(f"{s}{x}" for s in keep for x in (".json", ".trace.jsonl")))
+
+
+def _run_sh_block(start, end):
+    text = (Path(__file__).resolve().parent.parent / "run.sh").read_text()
+    a = text.index(start)
+    return text[a:text.index(end, a)]
+
+
+def test_run_sh_archives_and_cleans_superseded():
+    """run.sh's archive block moves runs/superseded/ with the night; its --clean-ws step reads superseded/*.json."""
+    archive = _run_sh_block("shopt -s nullglob\nprior=", "\n# --- 2. Run the matrix")
+    clean = _run_sh_block("import json, re, shutil, sys", "\nPY\n")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        runs = d / "runs"
+        (runs / "archive" / "OLD").mkdir(parents=True)
+        (runs / "archive" / "OLD" / "keep.json").write_text("{}")
+        (runs / "superseded").mkdir()
+        (runs / "superseded" / "a.json").write_text("{}")
+        (runs / "b.json").write_text("{}")
+        subprocess.run(["bash", "-c", f'set -euo pipefail\nRUNS_DIR={runs}\nRESUME=0\nTS=NEW\n{archive}'],
+                       check=True, capture_output=True)
+        check("superseded/ archived with the night", sorted(p.relative_to(runs / "archive" / "NEW").as_posix()
+                                                            for p in (runs / "archive" / "NEW").rglob("*.json")),
+              ["b.json", "superseded/a.json"])
+        check("runs/ is empty of superseded afterwards; archive/OLD untouched",
+              (sorted(p.name for p in runs.iterdir()), (runs / "archive" / "OLD" / "keep.json").exists()), (["archive"], True))
+        # --resume keeps it in place
+        (runs / "superseded").mkdir()
+        (runs / "superseded" / "c.json").write_text("{}")
+        subprocess.run(["bash", "-c", f'set -euo pipefail\nRUNS_DIR={runs}\nRESUME=1\nTS=N2\n{archive}'], check=True, capture_output=True)
+        check("--resume leaves superseded/ in place", (runs / "superseded" / "c.json").exists(), True)
+        # clean-ws: the workspace of a superseded run is removed, archive/ is not read
+        ws_root = d / "ws"
+        for name in ("w-0123456789", "w-abcdef0123", "w-9999999999"):
+            (ws_root / name / "w").mkdir(parents=True)
+        for f, name in ((runs / "superseded" / "c.json", "w-0123456789"), (runs / "d.json", "w-abcdef0123"),
+                        (runs / "archive" / "OLD" / "keep.json", "w-9999999999")):
+            f.write_text(json.dumps({"_meta": {"workspace_dir": str(ws_root / name / "w")}}))
+        subprocess.run([sys.executable, "-c", clean, str(runs)], check=True, capture_output=True)
+        check("clean-ws removes superseded and current workspaces, never archive/'s",
+              sorted(p.name for p in ws_root.iterdir()), ["w-9999999999"])
 
 
 def test_main_stop_returns_1_and_resume_supersedes():

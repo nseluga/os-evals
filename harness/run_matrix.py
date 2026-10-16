@@ -21,8 +21,10 @@ Inputs:
   --config-dir path to configs/ (default: <repo>/configs)
   --tasks-dir  path to tasks/ (default: <repo>/tasks)
   --runs-dir   path to runs/ (default: <repo>/runs)
-  --jobs N     run one-shot tasks in a pool of N threads (default 1); multi-turn tasks
-               always run serially after the pool. N=1 keeps the plain serial order.
+  --jobs N     thread pool of N (default 1). N=1 runs strictly in the budget order. N>1 runs in rounds
+               by repeat index (r1 cells before any r2): within a round every one-shot task goes through
+               the pool first, then that round's multi-turn tasks run serially, so under N>1 a round's
+               multi-turn cells start after its one-shots whatever their budget-order rank.
   --ws-root    dir that holds the per-run dirs (default: env EVAL_WS_ROOT, else
                /Users/Shared/evalws: outside the repo and $HOME, so the model cannot walk up
                to tasks/ or an ancestor .claude/). Each run gets an opaque
@@ -42,6 +44,7 @@ default (false => skipped unless named in --tasks), tools (none => `--tools ""`)
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -812,18 +815,12 @@ def load_history(scorecards_dir: Path) -> list[list[dict]]:
     return out
 
 
-def latest_scores(scorecards_dir: Path) -> list[dict]:
-    """Records of the newest run by the stamp in its file name (not mtime). `MERGED-*` aggregates and
-    `rescored` copies are skipped: they are not a single run's verdicts."""
-    files = sorted((f for f in scorecards_dir.glob("*.scores.json")
-                    if re.match(r"\d{8}T\d{6}Z", f.name) and "rescored" not in f.name),
-                   key=lambda f: f.name, reverse=True)
-    for f in files:
-        try:
-            return json.loads(f.read_text()).get("scores", [])
-        except (ValueError, AttributeError):
-            continue
-    return []
+def stamped_scorecards(scorecards_dir: Path) -> list[Path]:
+    """Per-run score files (name starts with a `YYYYMMDDTHHMMSSZ` stamp), newest stamp first, by name not mtime.
+    At one stamp the original comes before its `rescored` copy (which can be the only copy of a run).
+    `MERGED-*` aggregates are skipped: they repeat other files' records."""
+    files = [f for f in scorecards_dir.glob("*.scores.json") if re.match(r"\d{8}T\d{6}Z", f.name)]
+    return sorted(files, key=lambda f: (f.name[:16], "rescored" not in f.name, f.name), reverse=True)
 
 
 def estimate_cost(history: list[list[dict]], run_counts: dict[str, int], multi_turn: set[str]) -> dict:
@@ -856,8 +853,9 @@ def estimate_cost(history: list[list[dict]], run_counts: dict[str, int], multi_t
 
 # --- window budget: estimate, order, fit, stop, resume (item 1.2) ---
 
-def _base_layer(rung) -> str:
-    return re.split(r"[@~]", str(rung))[0]
+def _layer_spec(rung) -> str:
+    """Rung label without its `@sha`: `skills~ko.x@abc` -> `skills~ko.x`. A knockout variant stays its own layer."""
+    return str(rung).split("@")[0]
 
 
 def _model_family(model) -> str:
@@ -867,15 +865,23 @@ def _model_family(model) -> str:
     return next((f for f in ("opus", "sonnet", "haiku") if f in m), str(model))
 
 
+def family_ratios(history_records: list[dict]) -> dict:
+    """stats.model_ratios over records whose base model is mapped to its family: ONE pooled median per family
+    ({"opus": 2.2, ...}), so `claude-opus-4-8` cannot shadow `opus`. The estimator and the dry-run print both use it."""
+    from stats import _base_effort, model_ratios  # lazy: stats imports score, which imports this module
+    return model_ratios([{**r, "base_model": _model_family(_base_effort(r)[0])} for r in history_records])
+
+
 def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]:
     """Nominal cost estimate per item: [{"est": usd, "source": str}], parallel to `items`.
 
-    Mean cost_usd per (task, base layer, base model, effort) over every prior INDIVIDUAL record,
+    Mean cost_usd per (task, layer, base model family, effort) over every prior INDIVIDUAL record,
     infra runs included (they cost money too; majority records carry summed cost and are skipped,
-    as are `skipped` stubs). Fallbacks, in order, each named in `source`:
-    measured -> no-effort (same cell, any effort) -> sonnet-ratio (sonnet cell x stats.model_ratios)
-    -> layer-model-median -> global-median -> none (empty history, est 0)."""
-    from stats import _base_effort, model_ratios  # lazy: stats imports score, which imports this module
+    as are `skipped` stubs). The layer is the rung without `@sha`: a knockout variant (`skills~ko.x`) is its own
+    layer. Fallbacks, in order, each named in `source`:
+    measured -> no-effort (same cell, any effort) -> base-layer (variant never run: its base layer's cost)
+    -> sonnet-ratio (sonnet cell x family_ratios) -> layer-model-median -> global-median -> none (empty history, est 0)."""
+    from stats import _base_effort  # lazy: stats imports score, which imports this module
     by_cell, by_noeff = defaultdict(list), defaultdict(list)
     for r in history_records:
         if r.get("repeat_majority") or r.get("infra_reason") == "skipped":
@@ -883,27 +889,27 @@ def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]
         b, e = _base_effort(r)
         b = _model_family(b)
         c = r.get("cost_usd") or 0
-        by_cell[(r.get("task"), _base_layer(r.get("rung", "")), b, e)].append(c)
-        by_noeff[(r.get("task"), _base_layer(r.get("rung", "")), b)].append(c)
+        by_cell[(r.get("task"), _layer_spec(r.get("rung", "")), b, e)].append(c)
+        by_noeff[(r.get("task"), _layer_spec(r.get("rung", "")), b)].append(c)
     cell = {k: statistics.mean(v) for k, v in by_cell.items()}
     noeff = {k: statistics.mean(v) for k, v in by_noeff.items()}
-    ratios = {}
-    for k, v in model_ratios(history_records).items():  # keyed by raw id in stats; re-key by family
-        if not isinstance(ratios.get(_model_family(k)), float):
-            ratios[_model_family(k)] = v
+    ratios = family_ratios(history_records)
     all_means = list(cell.values())
     out = []
     for it in items:
-        task, layer, model, effort = it["task"], _base_layer(it["layer"]), _model_family(it["model"]), it["effort"]
+        task, layer, model, effort = it["task"], _layer_spec(it["layer"]), _model_family(it["model"]), it["effort"]
+        base = parse_layer(layer)[0]
         if (task, layer, model, effort) in cell:
             est, src = cell[(task, layer, model, effort)], "measured"
         elif (task, layer, model) in noeff:
             est, src = noeff[(task, layer, model)], "no-effort"
+        elif base != layer and (task, base, model) in noeff:  # unrun knockout variant: its base layer's cost, never "measured"
+            est, src = cell.get((task, base, model, effort), noeff[(task, base, model)]), "base-layer"
         else:
             ratio = ratios.get(model)
             son = [cell.get((task, layer, k[2], effort), v) for k, v in noeff.items()
                    if k[:2] == (task, layer) and "sonnet" in k[2].lower()]
-            lm = [v for k, v in cell.items() if k[1] == layer and k[2] == model]
+            lm = [v for k, v in cell.items() if k[1] in (layer, base) and k[2] == model]
             if son and isinstance(ratio, float):
                 est, src = son[0] * ratio, "sonnet-ratio"
             elif lm:
@@ -916,20 +922,47 @@ def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]
     return out
 
 
-UNMEASURED_SOURCES = ("sonnet-ratio", "layer-model-median", "global-median", "none")
+UNMEASURED_SOURCES = ("base-layer", "sonnet-ratio", "layer-model-median", "global-median", "none")
 
 
-def discriminating_set(records: list[dict]) -> set:
-    """{(task, model family)} whose pass/fail differs across layers (rungs) in `records`
-    (the latest scores file). Infra and majority rows are ignored; a rung's verdict is its pass rate >= 0.5."""
+def _layer_outcomes(records: list[dict]) -> dict:
+    """{(task, model family): {layer spec (no @sha, `~mod` kept): [passed, ...]}}; infra and majority rows ignored."""
     from stats import _base_effort
     per: dict = defaultdict(lambda: defaultdict(list))
     for r in records:
         if r.get("infra_error") or r.get("repeat_majority"):
             continue
-        per[(r.get("task"), _model_family(_base_effort(r)[0]))][_base_layer(r.get("rung", ""))].append(bool(r.get("passed")))
-    return {k for k, rungs in per.items()
-            if len({sum(v) / len(v) >= 0.5 for v in rungs.values()}) > 1}
+        per[(r.get("task"), _model_family(_base_effort(r)[0]))][_layer_spec(r.get("rung", ""))].append(bool(r.get("passed")))
+    return per
+
+
+def _verdicts_differ(rungs: dict) -> bool:
+    """A layer's verdict is its pass rate >= 0.5; True when the layers disagree."""
+    return len({sum(v) / len(v) >= 0.5 for v in rungs.values()}) > 1
+
+
+def discriminating_set(records: list[dict]) -> set:
+    """{(task, model family)} whose pass/fail differs across layers in `records`. A knockout variant is its own
+    layer, never pooled with its base."""
+    return {k for k, rungs in _layer_outcomes(records).items() if _verdicts_differ(rungs)}
+
+
+def history_discriminating(scorecards_dir: Path) -> set:
+    """discriminating_set over the stamped history. overnight.sh writes one file per stage (canary, verdict-opus,
+    verdict-sonnet), so no single file covers the matrix: per (task, model family), the first file (newest first)
+    that has the key at >= 2 layers decides; older files never override it."""
+    out, seen = set(), set()
+    for f in stamped_scorecards(scorecards_dir):
+        try:
+            recs = json.loads(f.read_text()).get("scores", [])
+        except (ValueError, AttributeError, OSError):
+            continue
+        for k, rungs in _layer_outcomes(recs).items():
+            if k not in seen and len(rungs) >= 2:
+                seen.add(k)
+                if _verdicts_differ(rungs):
+                    out.add(k)
+    return out
 
 
 def order_items(items: list[dict], ests: list[dict], disc: set) -> list[tuple[dict, dict]]:
@@ -1021,7 +1054,7 @@ def supersede_runs(runs_dir: Path, paths: list) -> None:
     they are not scored twice next to the new run. Non-recursive: runs/archive/ is never touched."""
     dest = runs_dir / "superseded"
     for f in paths:
-        for side in runs_dir.glob(f"{f.stem}.*"):
+        for side in runs_dir.glob(glob.escape(f.stem) + ".*"):
             dest.mkdir(exist_ok=True)
             side.replace(dest / side.name)
 
@@ -1095,7 +1128,8 @@ def main() -> int:
     parser.add_argument("--config-dir", default=str(REPO_ROOT / "configs"))
     parser.add_argument("--tasks-dir", default=str(REPO_ROOT / "tasks"))
     parser.add_argument("--runs-dir", default=str(REPO_ROOT / "runs"))
-    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="thread pool size; N>1 runs each repeat round one-shots first, then its multi-turn cells serially")
     parser.add_argument("--ws-root", default=os.environ.get("EVAL_WS_ROOT", "") or DEFAULT_WS_ROOT)
     parser.add_argument("--repeat", type=int, default=None)
     parser.add_argument("--effort", default="high", help=f"comma-separated, from {','.join(EFFORTS)}")
@@ -1185,7 +1219,7 @@ def main() -> int:
         valid, stale = scan_runs(runs_dir)
         items = [it for it in items if item_stem(it) not in valid]
     ordered = order_items(items, estimate_items([x for h in history for x in h], items),
-                          discriminating_set(latest_scores(Path(args.scorecards_dir))))
+                          history_discriminating(Path(args.scorecards_dir)))
     items = [it for it, _ in ordered]
 
     if args.dry_run:
@@ -1216,10 +1250,9 @@ def main() -> int:
         wall_par = est["secs_one"] / jobs + est["secs_multi"]
         print(f"legacy estimate (all models pooled, no fallbacks; the verdict below is the fit block): ${est['cost']:.2f}, serial wall "
               f"{(est['secs_one'] + est['secs_multi']) / 60:.0f} min; with --jobs {jobs}: {wall_par / 60:.0f} min")
-        from stats import model_ratios  # lazy: stats imports score, which imports this module
-        ratios = model_ratios([x for h in history for x in h])
+        ratios = family_ratios([x for h in history for x in h])  # the same figures the estimator uses
         for m in (m for m in models if "sonnet" not in m.lower()):
-            r = ratios.get(m, "UNMEASURED")
+            r = ratios.get(_model_family(m), "UNMEASURED")
             print(f"measured cost ratio {m} vs sonnet: " + (r if isinstance(r, str) else f"{r:.2f}x (median, matched cells)"))
         if est["no_history"]:
             print(f"  no history (median of others used): {', '.join(est['no_history'])}")
