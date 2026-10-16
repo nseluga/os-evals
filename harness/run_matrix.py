@@ -31,6 +31,11 @@ Inputs:
                transcripts or state). Transcripts stay in --runs-dir.
   --repeat N   run every task N times, overriding each task's meta.yaml `repeat`
                (default: unset, use meta).
+  --window-usd N   usage-window budget for the --dry-run fit block (default 100): estimated
+               nominal $ of the ordered matrix vs N -> FITS / OVER BY $x.
+  --scorecards-dir  where the cost history is read from (default: <repo>/scorecards)
+  --resume     skip cells that already have a valid _meta in --runs-dir (run-id stem minus
+               timestamp); a stopped matrix's `skipped` stubs are replaced on re-run.
 
 meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
 default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
@@ -45,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,6 +109,11 @@ def find_tasks(tasks_dir: Path, include_non_default: bool = True) -> list[str]:
 def _slug(task: str) -> str:
     """Filesystem-safe token for a task id (which may contain '/')."""
     return task.replace("/", "-")
+
+
+def cell_stem(task: str, rung, model: str, effort: str) -> str:
+    """Run id minus its leading timestamp (and `_rN`): the identity --resume matches on."""
+    return f"{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}_{effort}"
 
 
 def restore_workspace(task_dir: Path, dest: Path) -> None:
@@ -318,7 +329,9 @@ def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
 
 
 _RATE_LIMIT_RE = re.compile(
-    r"\b429\b|rate[ _]limit|exceed your account|overloaded_error|request rejected",
+    # usage limit|resets at|out of extra usage: wording NOT yet observed from the CLI (unverified guesses)
+    r"\b429\b|rate[ _]limit|exceed your account|overloaded_error|request rejected"
+    r"|usage limit|resets at|out of extra usage",
     re.IGNORECASE,
 )
 
@@ -507,10 +520,12 @@ def run_one(
     max_budget_usd: float | None = None,
     ws_root: Path | None = None,
     effort: str = "high",
+    budget=None,
 ) -> Path:
     """Run claude -p for one task/layer/model combo. Returns path to saved transcript.
 
-    `rung` is the label recorded in _meta (default: the layer name)."""
+    `rung` is the label recorded in _meta (default: the layer name). `budget` (a MatrixBudget)
+    receives this run's cost + rate-limit outcome and stamps _meta.matrix_cum_usd."""
     rung = layer if rung is None else rung
     task_dir = tasks_dir / task
     prompt_file = task_dir / "prompt.md"
@@ -536,7 +551,7 @@ def run_one(
             env["ANTHROPIC_AUTH_TOKEN"] = _TOKEN
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base_run_id = f"{ts}_{_slug(task)}_{str(rung).replace('@', '-')}_{model.replace('-', '_')}_{effort}"
+    base_run_id = f"{ts}_{cell_stem(task, rung, model, effort)}"
     run_id = f"{base_run_id}_r{repeat_index}" if repeat_total > 1 else base_run_id
 
     # Every run gets its OWN per-run dir <ws_root>/w-<hex>/ holding w/ (the cwd) and cfg/
@@ -657,6 +672,7 @@ def run_one(
     no_result = not timed_out and not any(e.get("type") == "result" for e in events)
     raw_events = list(events)
     transcript = dict(transcript)  # never alias a stream event: _meta must not leak into the trace
+    matrix_cum = budget.record(transcript.get("total_cost_usd"), rate_limited and not auth_error) if budget else None
     transcript["_meta"] = {
         "task": task,
         "rung": rung,
@@ -680,6 +696,7 @@ def run_one(
         "skill_fired": skill_fired,
         "auth_error": auth_error,
         "rate_limited": rate_limited,
+        "matrix_cum_usd": matrix_cum,
         "num_events": len(events),
         "home_isolated": isolated,
         "contaminated": bool(hits),
@@ -754,8 +771,177 @@ def estimate_cost(history: list[list[dict]], run_counts: dict[str, int], multi_t
     return {"cost": cost, "secs_one": secs_one, "secs_multi": secs_multi, "no_history": no_history}
 
 
-def execute_items(items: list, runner, jobs: int = 1) -> tuple[list, int]:
+# --- window budget: estimate, order, fit, stop, resume (item 1.2) ---
+
+def _base_layer(rung) -> str:
+    return re.split(r"[@~]", str(rung))[0]
+
+
+def estimate_items(history_records: list[dict], items: list[dict]) -> list[dict]:
+    """Nominal cost estimate per item: [{"est": usd, "source": str}], parallel to `items`.
+
+    Mean cost_usd per (task, base layer, base model, effort) over every prior INDIVIDUAL record,
+    infra runs included (they cost money too; majority records carry summed cost and are skipped,
+    as are `skipped` stubs). Fallbacks, in order, each named in `source`:
+    measured -> no-effort (same cell, any effort) -> sonnet-ratio (sonnet cell x stats.model_ratios)
+    -> layer-model-median -> global-median -> none (empty history, est 0)."""
+    from stats import _base_effort, model_ratios  # lazy: stats imports score, which imports this module
+    by_cell, by_noeff = defaultdict(list), defaultdict(list)
+    for r in history_records:
+        if r.get("repeat_majority") or r.get("infra_reason") == "skipped":
+            continue
+        b, e = _base_effort(r)
+        c = r.get("cost_usd") or 0
+        by_cell[(r.get("task"), _base_layer(r.get("rung", "")), b, e)].append(c)
+        by_noeff[(r.get("task"), _base_layer(r.get("rung", "")), b)].append(c)
+    cell = {k: statistics.mean(v) for k, v in by_cell.items()}
+    noeff = {k: statistics.mean(v) for k, v in by_noeff.items()}
+    ratios = model_ratios(history_records)
+    all_means = list(cell.values())
+    out = []
+    for it in items:
+        task, layer, model, effort = it["task"], _base_layer(it["layer"]), it["model"], it["effort"]
+        if (task, layer, model, effort) in cell:
+            est, src = cell[(task, layer, model, effort)], "measured"
+        elif (task, layer, model) in noeff:
+            est, src = noeff[(task, layer, model)], "no-effort"
+        else:
+            ratio = ratios.get(model)
+            son = [cell.get((task, layer, k[2], effort), v) for k, v in noeff.items()
+                   if k[:2] == (task, layer) and "sonnet" in k[2].lower()]
+            lm = [v for k, v in cell.items() if k[1] == layer and k[2] == model]
+            if son and isinstance(ratio, float):
+                est, src = son[0] * ratio, "sonnet-ratio"
+            elif lm:
+                est, src = statistics.median(lm), "layer-model-median"
+            elif all_means:
+                est, src = statistics.median(all_means), "global-median"
+            else:
+                est, src = 0.0, "none"
+        out.append({"est": est, "source": src})
+    return out
+
+
+UNMEASURED_SOURCES = ("sonnet-ratio", "layer-model-median", "global-median", "none")
+
+
+def discriminating_set(records: list[dict]) -> set:
+    """{(task, base_model)} whose pass/fail differs across layers (rungs) in `records`
+    (the latest scores file). Infra and majority rows are ignored; a rung's verdict is its pass rate >= 0.5."""
+    from stats import _base_effort
+    per: dict = defaultdict(lambda: defaultdict(list))
+    for r in records:
+        if r.get("infra_error") or r.get("repeat_majority"):
+            continue
+        per[(r.get("task"), _base_effort(r)[0])][_base_layer(r.get("rung", ""))].append(bool(r.get("passed")))
+    return {k for k, rungs in per.items()
+            if len({sum(v) / len(v) >= 0.5 for v in rungs.values()}) > 1}
+
+
+def order_items(items: list[dict], ests: list[dict], disc: set) -> list[tuple[dict, dict]]:
+    """(item, estimate) pairs sorted by (repeat_index, not discriminating(task, model), est_cost):
+    cheap discriminating first-repeat cells run first, so a stopped night still yields verdicts."""
+    return sorted(zip(items, ests), key=lambda p: (p[0]["i"], (p[0]["task"], p[0]["model"]) not in disc, p[1]["est"]))
+
+
+def fit_block(ordered: list[tuple[dict, dict]], window_usd: float) -> list[str]:
+    """Lines of the dry-run fit block; the last is `verdict: FITS ...` or `verdict: OVER BY $x ...`."""
+    n = len(ordered)
+    total = sum(e["est"] for _, e in ordered)
+    by_model: dict = defaultdict(float)
+    for it, e in ordered:
+        by_model[f"{it['model']}:{it['effort']}"] += e["est"]
+    cum, cutoff = 0.0, n
+    for k, (_, e) in enumerate(ordered):
+        cum += e["est"]
+        if cum > window_usd:
+            cutoff = k
+            break
+    r1 = sum(e["est"] for it, e in ordered if it["i"] == 1)
+    unmeasured = sum(1 for _, e in ordered if e["source"] in UNMEASURED_SOURCES)
+    srcs = defaultdict(int)
+    for _, e in ordered:
+        srcs[e["source"]] += 1
+    lines = [f"window fit ({n} ordered cells, window ${window_usd:.2f}):",
+             f"total est: ${total:.2f}",
+             "by model: " + (", ".join(f"{m} ${c:.2f}" for m, c in sorted(by_model.items())) or "(none)"),
+             f"cutoff index: {cutoff} of {n}" + (" (every cell fits)" if cutoff == n else
+                                                  f" (cell {cutoff} is {ordered[cutoff][0]['label_id']}; it and later cells exceed the window)"),
+             f"all r1 cells fit: {'yes' if r1 <= window_usd else 'no'} (r1 est ${r1:.2f})",
+             f"UNMEASURED cells: {unmeasured} (no direct measurement for task/layer/model; ratio or median fallback)",
+             "estimate sources: " + (", ".join(f"{k} {v}" for k, v in sorted(srcs.items())) or "(none)")]
+    over = total - window_usd
+    lines.append(f"verdict: FITS (${total:.2f} <= ${window_usd:.2f})" if over <= 0
+                 else f"verdict: OVER BY ${over:.2f} (${total:.2f} > ${window_usd:.2f})")
+    return lines
+
+
+class MatrixBudget:
+    """Shared by every worker thread: running nominal $ across the matrix, and the stop switch.
+
+    record() is called once per finished run (under this lock) and returns the running total, which
+    run_one stamps as _meta.matrix_cum_usd, so the first rate_limited run shows the real cap.
+    `stop` is set after `stop_after` CONSECUTIVE exhausted (rate-limited after all retries) runs."""
+
+    def __init__(self, stop_after: int = 2):
+        self.lock, self.cum, self.streak = threading.Lock(), 0.0, 0
+        self.stop_after, self.stop = stop_after, threading.Event()
+
+    def record(self, cost, exhausted: bool) -> float:
+        with self.lock:
+            self.cum += cost or 0
+            self.streak = self.streak + 1 if exhausted else 0
+            if self.streak >= self.stop_after:
+                self.stop.set()
+            return round(self.cum, 6)
+
+
+def item_stem(it: dict) -> str:
+    """Resume identity of a planned item: its run-id stem, `_rN` included when repeated."""
+    s = cell_stem(it["task"], it["label"], it["model"], it["effort"])
+    return f"{s}_r{it['i']}" if it["repeat"] > 1 else s
+
+
+def scan_runs(runs_dir: Path) -> tuple[set, dict]:
+    """(stems with a valid _meta, {stem: path} of `skipped` stubs). Valid = parseable transcript whose
+    _meta is a dict and is not a stub or an exhausted rate-limit/auth failure (those re-run on resume).
+    Stem = file name minus the leading timestamp and `.json`."""
+    valid, stubs = set(), {}
+    for f in runs_dir.glob("*.json"):
+        stem = re.sub(r"^\d{8}T\d{6}Z_", "", f.stem)
+        try:
+            meta = json.loads(f.read_text()).get("_meta")
+        except (ValueError, AttributeError, OSError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("skipped"):
+            stubs[stem] = f
+        elif not (meta.get("rate_limited") or meta.get("auth_error")):
+            valid.add(stem)
+    return valid, stubs
+
+
+def write_skipped(it: dict, runs_dir: Path, os_sha: str, cum: float, reason: str) -> Path:
+    """Stub transcript for a cell the stop event kept from launching (score.py reads it as infra `skipped`)."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{ts}_{item_stem(it)}"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    out = runs_dir / f"{run_id}.json"
+    out.write_text(json.dumps({"type": "result", "subtype": "skipped", "is_error": True, "result": "", "_meta": {
+        "task": it["task"], "rung": it["label"], "layer": str(it["layer"]), "os_sha": os_sha, "model": it["model"],
+        "effort": it["effort"], "returncode": -1, "skipped": True, "skipped_reason": reason,
+        "matrix_cum_usd": round(cum, 6), "timestamp": datetime.now(timezone.utc).isoformat(), "multi_turn": it["multi_turn"],
+        "repeat_index": it["i"] if it["repeat"] > 1 else None, "repeat_total": it["repeat"] if it["repeat"] > 1 else None,
+    }}, indent=2))
+    return out
+
+
+def execute_items(items: list, runner, jobs: int = 1, stop=None, on_skip=None) -> tuple[list, int]:
     """Run items via runner(item) -> result; returns (results, failures).
+
+    `stop` (a threading.Event): once set, items not yet launched are handed to on_skip(item)
+    instead of runner; runs already in flight finish.
 
     jobs=1: plain serial, in item order. jobs>1: one-shot items (item["multi_turn"] false)
     go through a thread pool, then multi-turn items run serially after it. Each run writes
@@ -765,6 +951,10 @@ def execute_items(items: list, runner, jobs: int = 1) -> tuple[list, int]:
 
     def one(item):
         nonlocal failures
+        if stop is not None and stop.is_set():
+            if on_skip:
+                on_skip(item)
+            return
         try:
             r = runner(item)
         except Exception as e:
@@ -802,6 +992,9 @@ def main() -> int:
     parser.add_argument("--ws-root", default=os.environ.get("EVAL_WS_ROOT", "") or DEFAULT_WS_ROOT)
     parser.add_argument("--repeat", type=int, default=None)
     parser.add_argument("--effort", default="high", help=f"comma-separated, from {','.join(EFFORTS)}")
+    parser.add_argument("--window-usd", type=float, default=100.0, help="window budget for the --dry-run fit verdict")
+    parser.add_argument("--resume", action="store_true", help="skip cells that already have a valid _meta in --runs-dir")
+    parser.add_argument("--scorecards-dir", default=str(REPO_ROOT / "scorecards"))
     args = parser.parse_args()
     efforts = [e for e in args.effort.split(",") if e]
     bad_e = [e for e in efforts if e not in EFFORTS]
@@ -863,6 +1056,26 @@ def main() -> int:
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
         plan.append((task, task_cells, args.repeat if args.repeat is not None else task_meta.get("repeat", 1)))
 
+    items = [
+        {"task": task, "layer": layer, "sha": sha, "label": label, "model": model, "effort": effort, "i": i,
+         "repeat": repeat, "multi_turn": read_task_meta(tasks_dir / task)["multi_turn"],
+         "label_id": f"{task}/{label}/{model}/{effort}/r{i}"}
+        for task, task_cells, repeat in plan
+        for layer, sha, label in task_cells
+        for model in models
+        for effort in efforts
+        for i in range(1, repeat + 1)
+    ]
+    history = load_history(Path(args.scorecards_dir))
+    planned_items = len(items)
+    stubs = {}
+    if args.resume:
+        valid, stubs = scan_runs(runs_dir)
+        items = [it for it in items if item_stem(it) not in valid]
+    ordered = order_items(items, estimate_items([x for h in history for x in h], items),
+                          discriminating_set(history[0] if history else []))
+    items = [it for it, _ in ordered]
+
     if args.dry_run:
         ne = len(efforts)
         total = sum(len(tc) * len(models) * ne * rep for _, tc, rep in plan)
@@ -885,7 +1098,6 @@ def main() -> int:
         if no_tools:
             print(f'--tools "" added for: {", ".join(no_tools)}')
         counts = {t: len(tc) * len(models) * len(efforts) * rep for t, tc, rep in plan}
-        history = load_history(REPO_ROOT / "scorecards")
         est = estimate_cost(history, counts,
                             {t for t, m in metas.items() if m["multi_turn"]})
         wall_par = est["secs_one"] / jobs + est["secs_multi"]
@@ -899,6 +1111,9 @@ def main() -> int:
         if est["no_history"]:
             print(f"  no history (median of others used): {', '.join(est['no_history'])}")
         print(f"jobs: {jobs}  workspaces: {os.path.abspath(ws_root)}")
+        if args.resume:
+            print(f"resume: {planned_items - len(items)} of {planned_items} cells already have a valid _meta in {runs_dir}; {len(items)} remain")
+        print("\n".join(fit_block(ordered, args.window_usd)))
         return 0
 
     try:
@@ -909,29 +1124,31 @@ def main() -> int:
 
     ws_root.mkdir(parents=True, exist_ok=True)
 
-    items = [
-        {"task": task, "layer": layer, "sha": sha, "label": label, "model": model, "effort": effort, "i": i,
-         "repeat": repeat, "multi_turn": read_task_meta(tasks_dir / task)["multi_turn"],
-         "label_id": f"{task}/{label}/{model}/{effort}/r{i}"}
-        for task, task_cells, repeat in plan
-        for layer, sha, label in task_cells
-        for model in models
-        for effort in efforts
-        for i in range(1, repeat + 1)
-    ]
+    budget = MatrixBudget()
+    for it in items:  # re-running a cell replaces its `skipped` stub from a stopped matrix
+        if item_stem(it) in stubs:
+            stubs[item_stem(it)].unlink(missing_ok=True)
 
     def runner(it):
         return run_one(
             it["task"], it["layer"], it["model"], tasks_dir, configs_dir, runs_dir,
             repeat_index=it["i"], repeat_total=it["repeat"],
             os_sha=it["sha"], rung=it["label"], max_budget_usd=args.max_budget_usd,
-            ws_root=ws_root, effort=it["effort"],
+            ws_root=ws_root, effort=it["effort"], budget=budget,
         )
 
-    _, failures = execute_items(items, runner, jobs)
+    skipped = []
 
-    print(f"run_matrix: done. failures={failures}")
-    return 1 if failures > 0 else 0
+    def on_skip(it):
+        skipped.append(write_skipped(it, runs_dir, it["sha"], budget.cum, "matrix stopped: 2 consecutive usage-limit/rate-limit runs"))
+
+    _, failures = execute_items(items, runner, jobs, stop=budget.stop, on_skip=on_skip)
+
+    if skipped:
+        print(f"run_matrix: STOPPED after 2 consecutive rate-limited runs (nominal ${budget.cum:.2f} spent); "
+              f"{len(skipped)} cells written as skipped; re-run with --resume once the window resets", file=sys.stderr)
+    print(f"run_matrix: done. failures={failures} skipped={len(skipped)}")
+    return 1 if failures > 0 or skipped else 0
 
 
 if __name__ == "__main__":

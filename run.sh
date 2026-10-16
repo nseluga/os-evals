@@ -19,6 +19,8 @@ set -euo pipefail
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
 #   ./run.sh --effort low,high            # effort axis (low|medium|high|xhigh|max, default high)
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
+#   ./run.sh --window-usd 100             # usage-window budget for the --dry-run fit verdict (FITS / OVER BY $x)
+#   ./run.sh --resume                     # continue a stopped matrix: no archive, no build, skip cells already run
 #   ./run.sh --judge                      # after the matrix, grade rubric tasks with the Opus judge (appendix only)
 #
 # Auth: the OAuth token lives only in macOS keychain item `os-evals-claude-token` (never on disk);
@@ -54,6 +56,8 @@ WS_ROOT=""
 REPEAT=""
 EFFORT="high"
 JUDGE=0
+WINDOW_USD="100"
+RESUME=0
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -72,6 +76,8 @@ while [ $# -gt 0 ]; do
         --clean-ws) CLEAN_WS=1; shift;;
         --repeat) REPEAT="$2"; shift 2;;
         --effort) EFFORT="$2"; shift 2;;
+        --window-usd) WINDOW_USD="$2"; shift 2;;
+        --resume) RESUME=1; DO_BUILD=0; shift;;
         --judge) JUDGE=1; shift;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
@@ -159,6 +165,8 @@ MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
+MATRIX_ARGS+=(--window-usd "$WINDOW_USD")
+[ "$RESUME" -eq 1 ] && MATRIX_ARGS+=(--resume)
 
 if [ "$DRY_RUN" -eq 1 ]; then
     DRY_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry-run)" || { echo "$DRY_OUT"; exit 1; }
@@ -203,7 +211,9 @@ mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"
 shopt -s nullglob
 prior=("$RUNS_DIR"/*.json "$RUNS_DIR"/*.trace.jsonl "$RUNS_DIR"/*.judge.jsonl "$RUNS_DIR"/*.ws)
 shopt -u nullglob
-if [ "${#prior[@]}" -gt 0 ]; then
+if [ "$RESUME" -eq 1 ]; then
+    echo "run.sh: --resume: keeping ${#prior[@]} prior run artifacts in place (no archive, no build)"
+elif [ "${#prior[@]}" -gt 0 ]; then
     ARCHIVE="$RUNS_DIR/archive/$TS"
     mkdir -p "$ARCHIVE"
     mv "${prior[@]}" "$ARCHIVE/"
