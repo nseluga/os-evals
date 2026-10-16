@@ -3,6 +3,7 @@
 Run: python3 harness/test_run_guards.py
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,32 @@ def test_token_injected():
     check("rung.env HOME kept", seen["full"]["HOME"], "/h")
 
 
+def test_pre18_snapshot():
+    old = '{"h": "bash -c \'set -a; . \\"$CLAUDE_CONFIG_DIR/rung.env\\"; set +a; exec python3 /s/scripts/memory-relevance-hook.py\'"}'
+    cur = old.replace("exec", "t=$(security find-generic-password -s os-evals-claude-token -w); exec")
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        for name, text in (("old", old), ("cur", cur), ("nohook", '{"autoMemoryEnabled": false}')):
+            (d / "configs" / name / "memory").mkdir(parents=True)  # configs/<sha>/<layer>
+            (d / "configs" / name / "memory" / "settings.json").write_text(text)
+        t = lambda n: run_matrix.is_pre18_snapshot(d / "configs" / n / "memory")  # noqa: E731
+        check("old wrapper flagged", t("old"), True)
+        check("current wrapper / no hook / no settings.json pass", [t("cur"), t("nohook"), t("absent")], [False] * 3)
+        (d / "tasks" / "ok").mkdir(parents=True)
+        (d / "tasks" / "ok" / "prompt.md").write_text("hi")
+        argv = ["--tasks-dir", str(d / "tasks"), "--config-dir", str(d / "configs"), "--runs-dir", str(d / "runs"),
+                "--ws-root", str(d / "ws"), "--tasks", "ok", "--layers", "memory", "--models", "m", "--os-sha", "old"]
+        (d / "bin").mkdir()  # guard rail: if the refusal ever regresses, the "claude" that runs is this stub
+        (d / "bin" / "claude").write_text("#!/bin/sh\nexit 1\n")
+        (d / "bin" / "claude").chmod(0o755)
+        env = {**os.environ, "PATH": f"{d / 'bin'}:{os.environ['PATH']}", "CLAUDE_CODE_OAUTH_TOKEN": "dummy"}
+        r = subprocess.run([sys.executable, str(RM), *argv], capture_output=True, text=True, env=env)  # real path
+        check("real run on old snapshot exits 2", r.returncode, 2)
+        assert "pre-1.8 snapshot" in r.stderr, r.stderr
+        r = _cli(*argv, "--dry-run")
+        check("dry run on old snapshot warns, exits 0", (r.returncode, "WARNING pre-1.8" in r.stdout), (0, True))
+
+
 if __name__ == "__main__":
     test_parser_survives_junk()
     test_guards()
@@ -193,4 +220,5 @@ if __name__ == "__main__":
     test_meta_no_result_and_trace()
     test_token_keychain()
     test_token_injected()
+    test_pre18_snapshot()
     print("ALL PASS")

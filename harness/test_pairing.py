@@ -125,6 +125,66 @@ def test_run_sh_rejects_same_sha_twice():
         check("different shas not rejected as duplicate", "same commit" in p.stderr, False)
 
 
+def _run_sh_copy(d, wrapper):
+    """Throwaway run.sh tree: run.sh + harness/, one task, a snapshot whose memory-hook settings.json
+    uses `wrapper`, a sentinel runs/x.json, a fake ~/os repo, and stubs so nothing can reach a real
+    keychain or claude. Returns (cmd, env, runs_dir)."""
+    import shutil
+    d = Path(d)
+    shutil.copy2(RUN_SH, d / "run.sh")
+    shutil.copytree(RUN_SH.parent / "harness", d / "harness", ignore=shutil.ignore_patterns("__pycache__"))
+    (d / "tasks" / "ok").mkdir(parents=True)
+    (d / "tasks" / "ok" / "prompt.md").write_text("hi")
+    (d / "runs").mkdir()
+    (d / "runs" / "x.json").write_text("{}")
+    osd = d / "os"
+    osd.mkdir()
+    git = ["git", "-C", str(osd), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "a"], check=True)
+    sha = subprocess.run(git + ["rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    layer = d / "configs" / sha / "memory"
+    layer.mkdir(parents=True)
+    (layer / "settings.json").write_text('{"hooks": {"command": "%s /x/scripts/memory-relevance-hook.py"}}' % wrapper)
+    (layer / "rung.env").write_text("HOME=/nonexistent\n")
+    (layer / "rung.flags").write_text("--setting-sources user\n")
+    stubs = d / "stubs"
+    stubs.mkdir()
+    for name in ("security", "claude"):  # security: no keychain item; claude: never spend
+        (stubs / name).write_text("#!/bin/sh\nexit 1\n")
+        (stubs / name).chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_OAUTH_TOKEN"}
+    env.update(OS_DIR=str(osd), PATH=f"{stubs}:{env['PATH']}")
+    cmd = ["bash", str(d / "run.sh"), "--no-build", "--os-sha", sha, "--tasks", "ok", "--layers", "memory",
+           "--models", "haiku", "--ws-root", str(d / "ws")]
+    return cmd, env, d / "runs"
+
+
+def test_run_sh_refuses_before_archive():
+    """Real-run guards (missing token; pre-1.8 snapshot) exit 2 before runs/ is archived; dry run only warns."""
+    old, new = 'bash -c \'set -a; . "$CLAUDE_CONFIG_DIR/rung.env"; set +a; exec', "bash -c 'security find-generic-password -s os-evals-claude-token; exec"
+    with tempfile.TemporaryDirectory() as d:
+        cmd, env, runs = _run_sh_copy(d, new)
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        check("no token: exit", p.returncode, 2)
+        assert "no auth token" in p.stderr, p.stderr
+        check("no token: sentinel untouched, nothing archived", [(runs / "x.json").exists(), (runs / "archive").exists()], [True, False])
+    with tempfile.TemporaryDirectory() as d:
+        cmd, env, runs = _run_sh_copy(d, old)
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = "dummy-not-a-token"
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        check("pre-1.8 snapshot: exit", p.returncode, 2)
+        assert "pre-1.8 snapshot" in p.stderr and "without --no-build" in p.stderr, p.stderr
+        check("pre-1.8: sentinel untouched, nothing archived", [(runs / "x.json").exists(), (runs / "archive").exists()], [True, False])
+        p = subprocess.run(cmd + ["--dry-run"], capture_output=True, text=True, env=env)
+        check("pre-1.8 dry run not blocked", p.returncode, 0)
+        assert "WARNING pre-1.8 snapshot" in p.stdout, p.stdout
+    with tempfile.TemporaryDirectory() as d:
+        cmd, env, runs = _run_sh_copy(d, new)
+        p = subprocess.run(cmd + ["--dry-run"], capture_output=True, text=True, env=env)
+        check("current-wrapper dry run: exit, no warning", [p.returncode, "pre-1.8" in p.stdout], [0, False])
+
+
 if __name__ == "__main__":
     test_pairs_follow_user_order()
     test_ab_pairing_with_sentinel_bare()
@@ -133,4 +193,5 @@ if __name__ == "__main__":
     test_banner()
     test_reason_lines_and_single_repeat()
     test_run_sh_rejects_same_sha_twice()
+    test_run_sh_refuses_before_archive()
     print("ALL PASS")

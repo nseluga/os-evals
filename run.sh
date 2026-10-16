@@ -174,6 +174,12 @@ PRE_OUT="$(python3 "$SCRIPT_DIR/harness/run_matrix.py" "${MATRIX_ARGS[@]}" --dry
     echo "run.sh: ERROR preflight failed; nothing was run, moved or scored" >&2
     exit 2
 }
+# A pre-1.8 snapshot only warns in the dry run; refuse it here (its memory hook would have no auth).
+if grep -q 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT"; then
+    grep 'WARNING pre-1.8 snapshot' <<<"$PRE_OUT" >&2
+    echo "run.sh: ERROR pre-1.8 snapshot; nothing was run, moved or scored" >&2
+    exit 2
+fi
 PLANNED="$(echo "$PRE_OUT" | sed -n 's/^total runs: *\([0-9][0-9]*\).*/\1/p' | tail -1)"
 
 mkdir -p "$RUNS_DIR" "$SCORECARDS_DIR"

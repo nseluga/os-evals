@@ -303,8 +303,8 @@ _AUTH_ERR_PATTERNS = (
 def looks_like_auth_error(stdout: str, stderr: str, transcript: dict) -> bool:
     """Detect an auth/OAuth-expiry failure so it can be flagged infra (not a task fail).
 
-    A single multi-turn run can approach the ~1hr OAuth token lifetime of the token
-    read from the keychain/env at start; if the token expires mid-run the failure is infra, not evidence about
+    The token read from the keychain/env at start is a long-lived setup-token, so a mid-run
+    401 means it was revoked or rotated; that failure is infra, not evidence about
     the skill. score.py maps this to the check_rc==2 (unscoreable) convention.
     """
     t = transcript if isinstance(transcript, dict) else {}
@@ -463,6 +463,19 @@ def load_rung(configs_dir: Path, layer, os_sha: str = "") -> tuple[dict[str, str
                 flags.extend(line.split())
 
     return env_vars, flags
+
+
+def is_pre18_snapshot(template: Path) -> bool:
+    """True if the layer's settings.json wires the memory hook but not the keychain token re-read.
+
+    Pre-1.8 snapshots' hook wrapper takes the token from rung.env, which is filtered now, so the hook's
+    nested `claude -p` is "Not logged in" and silently injects nothing. Keyed on settings.json, not on
+    token lines, so it still holds after the rung.env cleanup."""
+    try:
+        s = (template / "settings.json").read_text()
+    except OSError:
+        return False
+    return "memory-relevance-hook" in s and KEYCHAIN_ITEM not in s
 
 
 def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
@@ -814,6 +827,16 @@ def main() -> int:
     shas = args.os_sha or [""]
     cells = plan_cells(layers, shas)
     models = args.models.split(",")
+
+    for layer, sha, _label in cells:
+        rdir = rung_dir(configs_dir, layer, sha)
+        if is_pre18_snapshot(rdir):
+            msg = (f"pre-1.8 snapshot {rdir}: its hook wrapper reads the token from rung.env; "
+                   "rebuild - rerun without --no-build")
+            if not args.dry_run:
+                print(f"run_matrix: ERROR {msg}", file=sys.stderr)
+                return 2
+            print(f"run_matrix: WARNING {msg} (a real run would refuse)")
 
     tasks = [t for t in tasks if t]
 
