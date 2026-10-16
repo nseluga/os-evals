@@ -247,6 +247,33 @@ def test_sidecar_roundtrip_and_validate_writes_nothing():
             judge.call_judge, judge.latest_sha = orig, orig_sha
 
 
+def test_judge_env_carries_keychain_token():
+    """Item 1.8 moved the token out of rung.env; judge_env must inject it like run_one does."""
+    import os
+    import run_matrix
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        bare = root / "configs" / "abc1234" / "bare"
+        bare.mkdir(parents=True)
+        (bare / "rung.env").write_text("HOME=/nonexistent/home\n")
+        (bare / "settings.json").write_text("{}")
+        saved_tok, saved_env = run_matrix._TOKEN, os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        try:
+            run_matrix._TOKEN = None
+            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "tok-from-test"
+            env = judge.judge_env(root / "configs", "abc1234", root / "cfg")
+        finally:
+            run_matrix._TOKEN = saved_tok
+            if saved_env is None:
+                os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            else:
+                os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = saved_env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-from-test", env.get("CLAUDE_CODE_OAUTH_TOKEN")
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "tok-from-test"
+        assert env["HOME"] == "/nonexistent/home"
+        assert env["CLAUDE_CONFIG_DIR"] == str(root / "cfg")
+
+
 if __name__ == "__main__":
     test_prompt_has_no_run_identity()
     test_process_prompt_has_no_run_identity()
@@ -260,4 +287,5 @@ if __name__ == "__main__":
     test_process_digest_only_for_process_tasks()
     test_meta_column0_guard()
     test_sidecar_roundtrip_and_validate_writes_nothing()
+    test_judge_env_carries_keychain_token()
     print("ALL PASS")

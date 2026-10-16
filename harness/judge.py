@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from contamination import scrub_env  # noqa: E402
-from run_matrix import _iter_tool_uses, build_run_config, execute_items, load_rung, rung_dir  # noqa: E402
+from run_matrix import _iter_tool_uses, build_run_config, execute_items, load_rung, oauth_token, rung_dir  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent
 JUDGE_MODEL = "opus"
@@ -178,12 +178,15 @@ def latest_sha(configs_dir: Path, preferred: str = "") -> str:
 
 
 def judge_env(configs_dir: Path, os_sha: str, cfg_dir: Path) -> dict:
-    """Env of a bare-layer run (isolated HOME, token via rung.env, per-call config dir): the
+    """Env of a bare-layer run (isolated HOME, token from the keychain, per-call config dir): the
     judge never inherits Nate's memory, skills or CLAUDE.md."""
     env_vars, _flags = load_rung(Path(configs_dir), "bare", os_sha)
     build_run_config(rung_dir(Path(configs_dir), "bare", os_sha), cfg_dir)
     env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
     env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
+    tok = oauth_token()  # keychain (item 1.8): rung.env carries no token any more
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+    env["ANTHROPIC_AUTH_TOKEN"] = tok  # same as run_one's bare layer
     return env
 
 
