@@ -1,0 +1,12 @@
+# Workspace Reference — process/inline-one-fix
+
+## Git SHA reference
+```
+repo: bcns-mini
+origin: /Users/nateseluga/os-evals-fixtures/bcns-mini
+sha: 4a8f7409f71715acdcb6b98a74807812cbb41911
+```
+Node 22 ESM, zero dependencies, no setup.sh. `npm test` = `node --test test/*.test.mjs`.
+Reference solution (not a parsed field, so validate_checks.sh uses tests/good and tests/bad):
+branch solution/redact-shpss @ 378962183408075fd1ad4ec9bbd3fec87384bd16 — one line in
+src/helpers.mjs plus test/redact-shpss.test.mjs. tests/good is `git archive` of it.
