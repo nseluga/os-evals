@@ -176,8 +176,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
         JN=0
         while IFS= read -r l; do
             t="${l#  }"; t="${t%%:*}"
-            [ -f "$TASKS_DIR/$t/rubric.md" ] && JN=$((JN + ${l##*= }))
-        done < <(echo "$DRY_OUT" | grep -E '^  [^ :]+: .* = [0-9]+$')
+            n="$(sed -E 's/.* = ([0-9]+)( .*)?$/\1/' <<<"$l")"
+            [ -f "$TASKS_DIR/$t/rubric.md" ] && JN=$((JN + n))
+        done < <(echo "$DRY_OUT" | grep -E '^  [^ :]+: .* = [0-9]+( |$)')
         echo "run.sh: --judge adds up to $JN Opus judge calls (rubric tasks x planned runs), cap \$0.50 each, not in the estimate above"
     fi
     echo "run.sh: dry run only (nothing invoked, scored, or written to runs/)"

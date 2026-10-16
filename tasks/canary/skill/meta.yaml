@@ -6,13 +6,14 @@ curated_skill: none (proves the skills layer loads)
 source: authored as a config-layer canary
 layer_expected: skills
 source_file: skills/
-tools: none
 repeat: 1
 description: |
   Canary for the skills layer. Skills are listed in the session's system reminder with names and one-line
   descriptions when ~/os/skills is wired into ~/.claude/skills. Names such as dt-engineer, octopus-merge, merge-lane,
   fable-orchestrate exist under ~/os/skills/ and a bare session has no such skills. Check requires at least two of a
-  15-name list of distinctive skills. The prompt forbids tools and tools are disabled (tools: none).
+  15-name list of distinctive skills. The prompt forbids tool use but tools stay enabled: the skills listing reaches
+  the model only with the Skill tool present. Under `--tools ""` (until 2026-10-16) the model never saw the list and
+  full passed only when it happened to name two check names from CLAUDE.md text (10-02 Opus: "No skills list was loaded").
 
   Expected bare answer: built-in Claude Code names only (simplify, loop, schedule, init) or a refusal.
 
