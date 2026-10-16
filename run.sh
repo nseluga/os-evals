@@ -17,6 +17,7 @@ set -euo pipefail
 #   ./run.sh --jobs 4                     # one-shot tasks 4 at a time; multi-turn stay serial
 #   ./run.sh --ws-root /some/dir          # workspace root (default $EVAL_WS_ROOT or /Users/Shared/evalws)
 #   ./run.sh --clean-ws                   # delete this invocation's workspaces after the scorecard
+#   ./run.sh --effort low,high            # effort axis (low|medium|high|xhigh|max, default high)
 #   ./run.sh --repeat 3                   # run every task 3x (overrides each meta.yaml `repeat`)
 #
 # Auth: the OAuth token lives only in macOS keychain item `os-evals-claude-token` (never on disk);
@@ -50,6 +51,7 @@ CLEAN_WS=0
 JOBS=1
 WS_ROOT=""
 REPEAT=""
+EFFORT="high"
 BUILD_ARGS=()
 OS_DIR="${OS_DIR:-$HOME/os}"
 
@@ -67,6 +69,7 @@ while [ $# -gt 0 ]; do
         --ws-root) WS_ROOT="$2"; shift 2;;
         --clean-ws) CLEAN_WS=1; shift;;
         --repeat) REPEAT="$2"; shift 2;;
+        --effort) EFFORT="$2"; shift 2;;
         --keep-ws) shift;;     # no-op: workspaces are kept by default
         *) echo "run.sh: unknown arg: $1" >&2; exit 1;;
     esac
@@ -109,7 +112,7 @@ while [ -e "$SCORECARDS_DIR/${STAMP}.md" ] || [ -e "$SCORECARDS_DIR/${STAMP}.sco
     TS="$(date -u +%Y%m%dT%H%M%SZ)"
     STAMP="${TS}-${OS_SHA}"
 done
-echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
+echo "run.sh: os SHA=$OS_SHA  layers=$LAYERS  models=$MODELS  effort=$EFFORT  max-budget-usd=$MAX_BUDGET${REPEAT:+  repeat=$REPEAT}  stamp=$STAMP"
 
 # --- Auto-discover tasks if none given (exclude the print-date smoke test) ---
 if [ -z "$TASKS" ]; then
@@ -149,7 +152,7 @@ else
 fi
 
 MATRIX_ARGS=(--tasks "$TASKS" --layers "$LAYERS" --models "$MODELS" --max-budget-usd "$MAX_BUDGET"
-    --jobs "$JOBS"
+    --jobs "$JOBS" --effort "$EFFORT"
     "${SHA_ARGS[@]}" --config-dir "$CONFIGS_DIR" --tasks-dir "$TASKS_DIR" --runs-dir "$RUNS_DIR")
 [ -n "$WS_ROOT" ] && MATRIX_ARGS+=(--ws-root "$WS_ROOT")
 [ -n "$REPEAT" ] && MATRIX_ARGS+=(--repeat "$REPEAT")
@@ -226,10 +229,14 @@ if [ "$SCORE_RC" -ne 0 ]; then
     FINAL_RC=1
 fi
 
+# --- 3b. Append this run's summary line to the tracked run history (the scorecard's trend table reads it) ---
+python3 "$SCRIPT_DIR/harness/stats.py" --scores-file "$SCORES_JSON" --history-line >> "$SCORECARDS_DIR/history.jsonl" \
+    || echo "run.sh: WARNING could not append scorecards/history.jsonl" >&2
+
 # --- 4. Render the scorecard ---
 echo "run.sh: rendering scorecard..."
 SCORECARD="$SCORECARDS_DIR/${STAMP}.md"
-STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC")
+STATS_ARGS=(--scores-file "$SCORES_JSON" --layers "$ORDER" --matrix-exit "$MATRIX_RC" --history-file "$SCORECARDS_DIR/history.jsonl")
 [ -n "$PLANNED" ] && STATS_ARGS+=(--planned-runs "$PLANNED")
 if ! python3 "$SCRIPT_DIR/harness/stats.py" "${STATS_ARGS[@]}" > "$SCORECARD"; then
     [ -s "$SCORECARD" ] || rm -f "$SCORECARD"

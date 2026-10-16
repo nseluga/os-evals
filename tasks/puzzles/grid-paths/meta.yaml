@@ -1,0 +1,28 @@
+category: puzzles
+tools: none  # self-contained puzzle; no tools needed
+contaminated: false
+group: clean
+repeat: 3
+default: true
+timeout_sec: 600
+max_budget_usd: 0.75
+# layer_neutral: runs on bare only, kept in the cost/quality frontier, excluded from layer verdicts
+layer_neutral: true
+signals: exact-answer  # k-of-n over the 3 repeats: each repeat either gets the integer exactly or fails
+description: |
+  Synthetic capability puzzle (not an ~/os task): raw model x effort accuracy for the
+  cost/quality frontier.
+
+  Instance: 10x10 grid, 12 blocked cells, two open checkpoints A and B. Count right/down
+  lattice paths from top-left to bottom-right that pass through EXACTLY ONE of A and B.
+  The committed prompt.md is seed 7: A=(3,9), B=(1,6).
+
+  Key (seed 7, computed by DP in gen.py): exactly-one = 237. Distractor readings the
+  model might compute instead: either = 258, both = 21, neither = 3659 (total 3917).
+  gen.py enforces answer > 100 and all four counts distinct for every seed.
+
+  Regenerate: python3 gen.py --seed N [--key]. --key appends the answer key. Embedded
+  answer in check.sh is for seed 7 only; changing the seed means updating check.sh.
+
+  Check: text-only, reads {"result": ...} on stdin; takes the value after the last
+  "answer" (bold/commas tolerated), else the last integer in the reply. 0 right, 1 wrong.

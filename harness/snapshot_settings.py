@@ -65,6 +65,11 @@ def strip_settings(settings, snap_root):
     out = copy.deepcopy(settings)
     for k in DROP_KEYS:
         out.pop(k, None)
+    # Effort is an explicit run axis (--effort); settings must not set it behind the harness's back.
+    out.pop("effortLevel", None)
+    for ms in (out.get("modelSettings") or {}).values():
+        if isinstance(ms, dict):
+            ms.pop("effortLevel", None)
     hooks = memory_hooks_only(out.get("hooks"))
     if hooks:
         out["hooks"] = hooks

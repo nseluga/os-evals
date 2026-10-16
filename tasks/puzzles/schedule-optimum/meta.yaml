@@ -1,0 +1,31 @@
+category: puzzles
+tools: none  # self-contained puzzle; no tools needed
+contaminated: false
+group: clean
+repeat: 3
+default: true
+timeout_sec: 600
+max_budget_usd: 0.75
+# layer_neutral: runs on bare only, kept in the cost/quality frontier, excluded from layer verdicts
+layer_neutral: true
+signals: optimal-valid-schedule  # k-of-n over the 3 repeats: a repeat passes only with a valid schedule at the optimum makespan
+description: |
+  Synthetic capability puzzle (not an ~/os task): raw model x effort accuracy for the
+  cost/quality frontier.
+
+  Instance: 8 jobs (durations 2-9), 2 identical machines, a precedence DAG with 9 edges.
+  Ask: a schedule (job -> machine, integer start) minimizing makespan, plus the makespan.
+  gen.py keeps only instances where the optimum beats both the load bound ceil(sum/2) and
+  the critical path, so the easy lower bounds are not tight. Committed prompt.md is seed 7.
+
+  Key (seed 7): optimum makespan = 19 (load bound 18), by exhaustive branch-and-bound in
+  gen.py (cross-checked against full permutation x assignment enumeration). --key also
+  prints one optimal schedule. Many optimal schedules exist; any is accepted.
+
+  Regenerate: python3 gen.py --seed N [--key]. Embedded instance and optimum in check.sh
+  are for seed 7 only; changing the seed means regenerating check.sh.
+
+  Check: text-only, reads {"result": ...} on stdin; parses lines like "J3: M1 @ 4" (bold,
+  "on"/"->" variants tolerated, last occurrence per job wins) and "makespan=NN". Verifies
+  all 8 jobs placed, no overlap per machine, precedence respected, declared makespan equals
+  the schedule's real makespan equals the optimum. 0 pass, 1 fail.
