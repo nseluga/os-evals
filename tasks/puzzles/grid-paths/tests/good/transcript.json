@@ -1,0 +1,3 @@
+{
+ "result": "Counting with a DP over the grid, paths via A: 5 ... \nTotal through either = 258, through both = 21, so exactly one = 258 - 21 = 237.\n\n**ANSWER: 237**"
+}
