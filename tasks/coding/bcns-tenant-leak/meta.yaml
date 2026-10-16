@@ -33,3 +33,10 @@ description: |
   Frozen workspace: bcns-mini @ 4a8f740 (see workspace.ref). Solution at 74b2418.
   Fixtures: tests/good = solution; tests/bad = only exportJobs patched (searchJobs still
   leaks); tests/bad2 = base untouched.
+
+notes: |
+  Accepted false negatives in the structural check (it keys on top-level function
+  declarations and the text `client_id`): a helper written as an object method
+  (`export const tenant = { scope(db, clientId) {...} }`) is not seen as a function, and a
+  `client_id` string literal inside a reader's error message counts as a second filter
+  owner. Both are rare; the hidden behavioural tests still apply either way.

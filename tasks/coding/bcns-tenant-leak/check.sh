@@ -57,7 +57,7 @@ const src = readFileSync(process.env.WS + "/src/read-api.mjs", "utf8")
   .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/.*$/gm, "");
 const die = (m) => { console.error(m); process.exit(1); };
 // split into top-level segments at column-0 declarations
-const startRe = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(async\s*)?(?:function\b|\([^)]*\)\s*=>|\w+\s*=>)|(?:const|let|var|class|import)\b)/;
+const startRe = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function\b|\(|\w+\s*=>)|(?:const|let|var|class|import)\b)/;
 const segs = []; let cur = { name: null, fn: false, text: "" };
 for (const line of src.split("\n")) {
   const m = startRe.exec(line);
