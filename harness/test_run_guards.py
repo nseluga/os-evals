@@ -245,13 +245,28 @@ def test_task_budget_override_and_passthrough():
         check("signals passed through, comment stripped", m["signals"], "a,b")
         check("judge_files passed through, quotes stripped", m["judge_files"], "src/x.mjs,test/*.test.mjs")
         check("defaults when absent", run_matrix.read_task_meta(Path(d) / "none")["max_budget_usd"], None)
-    cmd = run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, 1.5)
-    check("meta max_budget_usd overrides CLI default", cmd[cmd.index("--max-budget-usd") + 1], "6.0")
-    cmd = run_matrix.build_cmd("m", [], {"max_budget_usd": None}, 1.5)
-    check("no meta value -> CLI default", cmd[cmd.index("--max-budget-usd") + 1], "1.5")
+    cap = lambda cmd: cmd[cmd.index("--max-budget-usd") + 1]  # noqa: E731
+    check("explicit CLI cap beats meta", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, 0.5)), "0.5")
+    check("meta cap applies when no CLI cap", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": 6.0}, None)), "6.0")
+    check("no CLI cap, no meta -> 1.50", cap(run_matrix.build_cmd("m", [], {"max_budget_usd": None}, None)), "1.5")
     info = {}
     _run_one('{"type":"result","is_error":false,"result":"ok"}\n', info=info)
-    check("run_one with no task cap uses build_cmd default (flag absent)", "--max-budget-usd" in info["cmd"], False)
+    check("run_one with neither cap -> 1.50", cap(info["cmd"]), "1.5")
+
+
+def test_budget_dry_run_effective_cap():
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        (Path(d) / "tasks" / "big").mkdir()
+        (Path(d) / "tasks" / "big" / "prompt.md").write_text("hi")
+        (Path(d) / "tasks" / "big" / "meta.yaml").write_text("max_budget_usd: 6\n")
+        out = _cli(*base, "--tasks", "ok,big", "--layers", "bare").stdout
+        check("no CLI cap: command line shows the 1.5 default", "--max-budget-usd 1.5 " in out, True)
+        check("no CLI cap: meta task listed with its cap", "max_budget_usd: big \u2014 6.0 (meta.yaml)" in out, True)
+        check("no CLI cap: plain task not listed", "max_budget_usd: ok" in out, False)
+        out = _cli(*base, "--tasks", "ok,big", "--layers", "bare", "--max-budget-usd", "0.5").stdout
+        check("explicit CLI cap shown", "--max-budget-usd 0.5 " in out, True)
+        check("explicit CLI cap: meta not listed (it loses)", "max_budget_usd: big" in out, False)
 
 
 def test_skill_fired_agent_and_one_shot():
@@ -297,10 +312,14 @@ def test_layer_neutral_bare_only_dry_run():
         check("ln plans 1 cell", "  ln: 1 cells" in out, True)
         check("sentinel still bare only", "sentinel: sent \u2014 bare layer only" in out and "  sent: 1 cells" in out, True)
         check("normal task keeps both cells", "  ok: 2 cells" in out, True)
+        out = _cli(*base, "--tasks", "ln,ok", "--layers", "full").stdout
+        check("layer_neutral with bare excluded says skipped", "layer_neutral: ln \u2014 skipped (0 cells, bare not in --layers)" in out, True)
+        check("...and plans 0 cells", "  ln: 0 cells" in out, True)
 
 
 if __name__ == "__main__":
     test_task_budget_override_and_passthrough()
+    test_budget_dry_run_effective_cap()
     test_skill_fired_agent_and_one_shot()
     test_layer_neutral_bare_only_dry_run()
     test_parser_survives_junk()

@@ -41,7 +41,7 @@ description: |
        (message.id order) than the second worker. A later worker whose description applies
        review findings is allowed and ignored. score.py exports TRACE_FILE for every run; the
        check is SKIPPED when TRACE_FILE is unset and exits 2 when it is set but missing.
-    Exit 2 only for infra (WORKSPACE_DIR unset/missing, node/npm/python3 absent).
+    Exit 2 only for infra (WORKSPACE_DIR unset/missing, TRACE_FILE set but missing, node/npm/python3 absent).
 
   Non-gating signals (printed to stderr as signal:<name>=<value>): worker-models,
   reviewer-model, parallel-spawns (2+ worker spawns sharing one message.id), worktree

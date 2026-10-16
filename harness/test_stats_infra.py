@@ -137,7 +137,20 @@ def test_layer_neutral_excluded_from_verdicts_kept_in_costs():
     check("frontier keeps layer_neutral", sum(c["n"] for c in stats.frontier_cells(rows + ln).values()), 8)
 
 
+def test_layer_neutral_excluded_from_per_rung_pass_counts():
+    data = _fixture()
+    base_md = stats.render_markdown(data, stats.compute_stats(data["scores"]), stats.token_summary(data["scores"]))
+    base_hist = stats.history_line(data)["rungs"]
+    data["scores"].append({**_s("LN", 1, True), "layer_neutral": True, "cost_usd": 1.0})  # bare-only row
+    md = stats.render_markdown(data, stats.compute_stats(data["scores"]), stats.token_summary(data["scores"]))
+    check("Pass/Fail by Rung table unchanged by a layer_neutral row", md.split("## Pass/Fail by Rung")[1].split("##")[0],
+          base_md.split("## Pass/Fail by Rung")[1].split("##")[0])
+    check("history rung counts unchanged", stats.history_line(data)["rungs"], base_hist)
+    check("per-run results still list it", "| LN | rung1 |" in md, True)
+
+
 if __name__ == "__main__":
+    test_layer_neutral_excluded_from_per_rung_pass_counts()
     test_layer_neutral_excluded_from_verdicts_kept_in_costs()
     test_token_summary_excludes_infra()
     test_sign_test_excludes_x()

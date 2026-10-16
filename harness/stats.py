@@ -233,12 +233,12 @@ def task_set_hash(scores: list[dict]) -> str:
 
 def history_line(data: dict, stamp: str = "") -> dict:
     """One run summary. Pass counts follow the Pass/Fail table (effective, non-sentinel,
-    non-infra rows). Cost is real spend: every individual row (repeat individuals and
+    non-layer_neutral, non-infra rows). Cost is real spend: every individual row (repeat individuals and
     non-repeat rows), infra and sentinel rows included, never the repeat_majority sums."""
     scores = data.get("scores", [])
     rungs: dict[str, dict] = {}
     for s in _effective_scores(scores):
-        if _is_sentinel(s) or _is_infra(s):
+        if _is_sentinel(s) or _is_layer_neutral(s) or _is_infra(s):
             continue
         r = rungs.setdefault(_rl(s["rung"]), {"pass": 0, "n": 0})
         r["n"] += 1
@@ -850,6 +850,8 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
     lines += ["## Pass/Fail by Rung", ""]
     by_rung: dict[int, dict] = defaultdict(lambda: {"pass": 0, "fail": 0, "infra": 0})
     for s in scored:
+        if _is_layer_neutral(s):  # bare-only rows would inflate bare's task set in a per-rung comparison
+            continue
         if _is_infra(s):
             by_rung[s["rung"]]["infra"] += 1
         elif s["passed"]:

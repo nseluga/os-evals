@@ -7,6 +7,7 @@
 #   `trace` column <unset rc>/<missing rc>: good workspace with TRACE_FILE unset -> 0 (skipped), set to a
 #   nonexistent path -> 2. With any tests/*/trace.jsonl, every tests/good*|bad* dir also runs as a
 #   workspace fixture (good* -> 0, bad* -> 1), including on the solution_sha path.
+#   Every check runs with OS_EVALS_VALIDATE=1 (score.py never sets it): lets a check rebuild a fixture-only workspace.
 # Usage: harness/validate_checks.sh [--task cat/name] [--keep]
 #   Drafts (_draft/...) are skipped unless named explicitly: --task _draft/knowledge/<name>
 set -uo pipefail
@@ -40,7 +41,7 @@ provision() { # $1=task_dir $2=dest $3=task-name ; setup.sh with cache of node_m
 
 RC=""; OUT=""
 run_check() { # $1=check.sh $2=stdin file $3=WORKSPACE_DIR value or "-" for unset $4=TRACE_FILE value or "-"/absent for unset
-  local c="$1" in="$2" ws="$3" tr="${4:--}" a=(env -u WORKSPACE_DIR -u TRACE_FILE)
+  local c="$1" in="$2" ws="$3" tr="${4:--}" a=(env -u WORKSPACE_DIR -u TRACE_FILE OS_EVALS_VALIDATE=1)
   [ "$ws" != "-" ] && a+=("WORKSPACE_DIR=$ws")
   [ "$tr" != "-" ] && a+=("TRACE_FILE=$tr")
   OUT="$("${a[@]}" "$c" <"$in" 2>&1)"; RC=$?
