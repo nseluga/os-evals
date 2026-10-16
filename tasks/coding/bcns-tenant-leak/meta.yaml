@@ -24,8 +24,10 @@ description: |
        time): listJobs, searchJobs, exportJobs never return a row whose client_id differs
        from the requested one, including archived rows and a search term that matches
        other clients' rows; own non-archived rows still come back; missing clientId throws.
-    3. Structural: each reader calls scopedQuery, and `client_id` appears nowhere in
-       src/read-api.mjs outside scopedQuery's own body.
+    3. Structural (name-agnostic): exactly one top-level function in src/read-api.mjs
+       mentions client_id (scopedQuery, or an equivalent single helper), and every reader
+       reaches it directly or through another top-level function.
+  The check does not require new regression tests; the rubric scores those.
   Exit 2 only for infra (WORKSPACE_DIR unset/missing, node missing).
 
   Frozen workspace: bcns-mini @ 4a8f740 (see workspace.ref). Solution at 74b2418.

@@ -4,7 +4,8 @@ The task: a customer reports that exportJobs returned another client's rows. Jud
 final `src/read-api.mjs`, the test files, and the model's written summary.
 
 - **5** — Root cause fixed in the shared path: every reader (listJobs, searchJobs,
-  exportJobs) goes through scopedQuery and no reader does its own client_id comparison.
+  exportJobs) goes through the shared scopedQuery filter (or an equivalent single helper)
+  and no reader does its own client_id comparison.
   The summary names the searchJobs leak unprompted (the report only mentioned exportJobs)
   and explains why the `||` in exportJobs was wrong. There is a regression test for each
   reader, using data where other clients genuinely match (including archived rows and a

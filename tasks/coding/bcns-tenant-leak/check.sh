@@ -7,8 +7,9 @@ set -uo pipefail
 #   1. `npm test` passes (the model's own regression tests must run green).
 #   2. Hidden forbidden-read tests (hidden/tenant-isolation.test.mjs, copied in here):
 #      listJobs / searchJobs / exportJobs never return another client's row.
-#   3. Structural: each reader calls scopedQuery, and `client_id` appears nowhere in
-#      src/read-api.mjs outside scopedQuery's own body (one place owns the filter).
+#   3. Structural (name-agnostic): exactly one top-level function in src/read-api.mjs
+#      mentions `client_id`, and every reader reaches it directly or transitively.
+#      Does NOT require new regression tests (the rubric scores those).
 #
 # rc: 0 = pass, 1 = real task failure, 2 = infra/unscoreable.
 
@@ -44,29 +45,41 @@ cp "$HIDDEN" "$HT"
 out="$(cd "$WS" && node --test "$HT" 2>&1)"; rc=$?
 rm -f "$HT"
 if [ "$rc" -ne 0 ]; then
-    printf '%s\n' "$out" | grep -E "^# (pass|fail)|not ok|leaked|Error" | head -12 >&2
-    fail "hidden tenant-isolation tests failed (a reader returned another client's rows)"
+    printf '%s\n' "$out" | grep -E "^# (pass|fail)|^not ok" | head -12 >&2
+    fail "hidden tenant-isolation tests failed (leak or fail-open on missing clientId)"
 fi
 
-# 3. structural: the client filter lives in one place
+# 3. structural: the client filter lives in exactly one top-level function, and every
+#    reader reaches it (directly or through other top-level functions). Name-agnostic.
 WS="$WS" node --input-type=module -e '
 import { readFileSync } from "node:fs";
-let src = readFileSync(process.env.WS + "/src/read-api.mjs", "utf8")
+const src = readFileSync(process.env.WS + "/src/read-api.mjs", "utf8")
   .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/.*$/gm, "");
-const body = (name) => {
-  const m = src.match(new RegExp("function\\s+" + name + "\\s*\\([^]*?\\n\\}"));
-  return m ? m[0] : null;
-};
-const sq = body("scopedQuery");
-if (!sq) { console.error("scopedQuery missing from src/read-api.mjs"); process.exit(1); }
-for (const r of ["listJobs", "searchJobs", "exportJobs"]) {
-  const b = body(r);
-  if (!b) { console.error(r + " missing from src/read-api.mjs"); process.exit(1); }
-  if (!/scopedQuery\s*\(/.test(b)) { console.error(r + " does not call scopedQuery"); process.exit(1); }
+const die = (m) => { console.error(m); process.exit(1); };
+// split into top-level segments at column-0 declarations
+const startRe = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(async\s*)?(?:function\b|\([^)]*\)\s*=>|\w+\s*=>)|(?:const|let|var|class|import)\b)/;
+const segs = []; let cur = { name: null, fn: false, text: "" };
+for (const line of src.split("\n")) {
+  const m = startRe.exec(line);
+  if (m) { segs.push(cur); const name = m[1] || m[2] || null; cur = { name, fn: !!name, text: "" }; }
+  cur.text += line + "\n";
 }
-const rest = src.replace(sq, "");
-if (/client_id/.test(rest)) { console.error("client_id referenced outside scopedQuery (duplicate tenant filter)"); process.exit(1); }
-' || fail "structural check: every reader must go through scopedQuery, with no separate client_id comparison"
+segs.push(cur);
+const fns = Object.fromEntries(segs.filter((x) => x.fn).map((x) => [x.name, x]));
+for (const r of ["listJobs", "searchJobs", "exportJobs"]) if (!fns[r]) die(r + " missing from src/read-api.mjs");
+const stray = segs.filter((x) => !x.fn && /client_id/.test(x.text));
+if (stray.length) die("client_id referenced outside a top-level function");
+const owners = Object.keys(fns).filter((n) => /client_id/.test(fns[n].text));
+if (owners.length !== 1) die("client_id filter must live in exactly one function, found: " + (owners.join(", ") || "none"));
+const owner = owners[0];
+const calls = (n) => Object.keys(fns).filter((m) => m !== n && new RegExp("\\b" + m + "\\s*\\(").test(fns[n].text));
+const reaches = (n, seen = new Set()) => {
+  if (n === owner) return true;
+  if (seen.has(n)) return false; seen.add(n);
+  return calls(n).some((m) => reaches(m, seen));
+};
+for (const r of ["listJobs", "searchJobs", "exportJobs"]) if (!reaches(r)) die(r + " does not go through " + owner + " (the shared client filter)");
+' || fail "structural check: every reader must go through the single shared client filter, with no separate client_id comparison"
 
-echo "PASS: no reader leaks across clients; the filter lives in scopedQuery"
+echo "PASS: no reader leaks across clients; the client filter lives in one shared function"
 exit 0
