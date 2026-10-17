@@ -9,17 +9,20 @@
     <string>/Users/nateseluga/os-evals/overnight.sh</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/nateseluga/os-evals</string>
-  <!-- Month+Day pinned: fires once (2026-10-02 03:00), not every night. If the Mac is asleep, launchd runs it on wake. -->
+  <!-- Reference copy. The live file is written by ./schedule-overnight.sh <date> <mode>, which also sets RUN_DATE so the
+       pinned Month/Day cannot fire again next year. If the Mac is asleep at 03:00, launchd runs it on wake. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Month</key><integer>10</integer>
-    <key>Day</key><integer>2</integer>
+    <key>Day</key><integer>17</integer>
     <key>Hour</key><integer>3</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/Users/nateseluga/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MODE</key><string>skill-lift</string>
+    <key>RUN_DATE</key><string>2026-10-17</string>
   </dict>
   <key>StandardOutPath</key><string>/Users/nateseluga/os-evals/overnight-logs/launchd.out</string>
   <key>StandardErrorPath</key><string>/Users/nateseluga/os-evals/overnight-logs/launchd.err</string>

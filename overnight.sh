@@ -50,6 +50,11 @@ OPUS_MAX_OUTPUT_TOKENS="${OPUS_MAX_OUTPUT_TOKENS-32000}"
 WIN_SONNET=40; WIN_OPUS=40; WIN_C1=8; WIN_PUZZLES=12; WIN_ORCH=40
 
 if [ -z "$DRY" ] && [ -e "$DONE" ]; then echo "overnight.sh: already ran today ($DONE); exiting" | tee -a "$LOG"; exit 0; fi
+# launchd's StartCalendarInterval has no Year, so a pinned Month/Day would fire again next year; schedule-overnight.sh
+# writes RUN_DATE and a stale one exits here.
+if [ -z "$DRY" ] && [ -n "${RUN_DATE:-}" ] && [ "$RUN_DATE" != "$(date +%Y-%m-%d)" ]; then
+    echo "overnight.sh: scheduled for $RUN_DATE, today is $(date +%Y-%m-%d); not running (re-point with ./schedule-overnight.sh)" | tee -a "$LOG"; exit 0
+fi
 
 # Resolve the os commit once so every stage tests the same snapshot even if ~/os moves overnight.
 SHA="$(git -C "${OS_DIR:-$HOME/os}" rev-parse --short HEAD)"
@@ -102,11 +107,21 @@ case "$MODE" in
     orchestrate) echo "orchestrate: $ORCH" | tee -a "$LOG";;
 esac
 
-stage() {  # name, then run.sh args. A stage whose --models is exactly `opus` gets the output-token cap.
+# Opus-only stages get an output-token cap (one runaway turn under --tools "" cost ~$2.65 in round 3). round3 mode
+# stays uncapped so its runs remain comparable with round-3 history. Prints `VAR=value` or nothing.
+opus_cap() {  # run.sh args as one string
+    [ "$MODE" != round3 ] && [ -n "$OPUS_MAX_OUTPUT_TOKENS" ] && [[ " $1 " == *" --models opus "* ]] \
+        && echo "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$OPUS_MAX_OUTPUT_TOKENS"
+    return 0
+}
+STAGE_MARK="$LOGDIR/.stage-start-$STAMP"
+
+stage() {  # name, then run.sh args
     local name="$1"; shift
     local cap=()
-    [ -n "$OPUS_MAX_OUTPUT_TOKENS" ] && [[ " $* " == *" --models opus "* ]] && cap=(env "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$OPUS_MAX_OUTPUT_TOKENS")
+    [ -n "$(opus_cap "$*")" ] && cap=(env "$(opus_cap "$*")")
     echo "=== stage $name start $(date)${cap:+ (CLAUDE_CODE_MAX_OUTPUT_TOKENS=$OPUS_MAX_OUTPUT_TOKENS)}" | tee -a "$LOG"
+    touch "$STAGE_MARK"  # deck_after only accepts a scores file newer than this
     caffeinate -i -s ${cap[@]+"${cap[@]}"} ./run.sh "$@" $DRY --os-sha "$SHA" --jobs 4 >> "$LOG" 2>&1
     local rc=$?
     echo "=== stage $name rc=$rc $(date)" | tee -a "$LOG"
@@ -133,7 +148,8 @@ for f in Path(sys.argv[1]).glob("*.json"):
     if m.get("skipped"): sys.exit(1)
 PY
     echo "overnight.sh: stage $1 stopped on the usage limit; ending the night. After the window resets:" | tee -a "$LOG"
-    echo "    cd $SCRIPT_DIR && ./run.sh --resume $2" | tee -a "$LOG"
+    echo "    cd $SCRIPT_DIR && $(opus_cap "$2") ./run.sh --resume $2" | tee -a "$LOG"
+    echo "    then: python3 harness/deck.py build --preset skill-lift --scores-file \"\$(ls -t scorecards/*.scores.json | head -1)\"" | tee -a "$LOG"
     [ -z "$DRY" ] && touch "$DONE"; exit 1
 }
 
@@ -143,10 +159,17 @@ PY
 deck_after() {  # stage name
     [ -n "$DRY" ] && return 0
     local scores; scores="$(ls -t scorecards/*.scores.json 2>/dev/null | head -1)"
-    [ -n "$scores" ] || { echo "deck ($1): no scores file; skipped" | tee -a "$LOG"; return 0; }
-    python3 harness/deck.py build --preset skill-lift --scores-file "$scores" >> "$LOG" 2>&1 \
-        && echo "deck ($1): round built from $(basename "$scores")" | tee -a "$LOG" \
-        || echo "deck ($1): no round built (rc=$?, see log)" | tee -a "$LOG"
+    [ -n "$scores" ] && [ "$scores" -nt "$STAGE_MARK" ] \
+        || { echo "deck ($1): stage wrote no scores file (newest: ${scores:-none}); skipped" | tee -a "$LOG"; return 0; }
+    local out rc; out="$(python3 harness/deck.py build --preset skill-lift --scores-file "$scores" 2>&1)"; rc=$?
+    echo "$out" >> "$LOG"
+    if [ $rc -eq 0 ]; then
+        local ts; ts="$(echo "$out" | sed -nE 's/^round ([^:]+):.*/\1/p' | tail -1)"
+        echo "deck ($1): round ${ts:-?} built from $(basename "$scores"). Rate it before the next run.sh archives runs/:" | tee -a "$LOG"
+        echo "    python3 harness/deck.py serve --round $ts    # after an archive add: --runs-dir runs/archive/<ts>" | tee -a "$LOG"
+    else
+        echo "deck ($1): no round built (rc=$rc, see log)" | tee -a "$LOG"
+    fi
 }
 
 # Stage 1 builds the snapshot (reads the keychain token); later stages reuse it.
@@ -203,6 +226,7 @@ skill-lift)
     # Wall gate: opus runs only if what is left of the night fits its estimate. A dry run has no elapsed time,
     # so it gates on sonnet-est + opus-est instead (the planning answer for the night).
     EST_OPUS="$(est_secs "${S_SK_OPUS[@]}")"
+    [ "$EST_OPUS" -gt 0 ] || echo "wall gate: WARNING skill-opus dry-run printed no 'est wall:' line (run.sh failed or no history); estimate treated as 0" | tee -a "$LOG"
     if [ -n "$DRY" ]; then USED="$(est_secs "${S_SK_SONNET[@]}")"; else USED=$(( $(date +%s) - T0 )); fi
     if (( USED + EST_OPUS <= WALL_CAP_SEC )); then
         echo "wall gate: used $(hm "$USED") + skill-opus est $(hm "$EST_OPUS") <= cap $(hm "$WALL_CAP_SEC"); running skill-opus" | tee -a "$LOG"
