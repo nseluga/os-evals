@@ -125,6 +125,100 @@ def test_strata_quotas():
                     assert e["stems"]["A"] != e["stems"]["B"], e  # repeats exist -> not flipped
 
 
+def test_strata_default_unchanged():
+    check("default STRATA", deck.STRATA, [("memory-vs-skills", 6), ("skills-vs-full", 6), ("adjacent-tie", 4),
+                                          ("check-disagree", 2), ("null", 2)])
+    check("quotas(20, None)", deck.quotas(20, None), [6, 6, 4, 2, 2])
+    check("quotas(20, STRATA)", deck.quotas(20, deck.STRATA), [6, 6, 4, 2, 2])
+    check("rung order known", sorted(RUNGS[::-1], key=deck._rung_key), RUNGS)
+    check("variant after base", sorted(["full", "skills~forced", "skills", "memory~nohook", "memory"],
+                                       key=deck._rung_key),
+          ["memory", "memory~nohook", "skills", "skills~forced", "full"])
+
+
+def test_strata_parse():
+    check("preset", deck.parse_strata(deck.PRESETS["skill-lift"]),
+          [("skills-vs-skills~forced", 10), ("skills-vs-skills~trigger", 4), ("bare-vs-skills~forced", 4), ("null", 2)])
+    check("dash layer + variants", deck.parse_strata("claude-md-vs-memory=3, skills~forced.fable-orchestrate-vs-memory~nohook=2,null=1"),
+          [("claude-md-vs-memory", 3), ("skills~forced.fable-orchestrate-vs-memory~nohook", 2), ("null", 1)])
+    for bad in ("", "skills", "a-vs-b", "a-vs-b=x", "a-vs-b=0", "a-vs-a=2", "a-vs-b-vs-c=2", "-vs-b=1", "a-vs-b=1,b-vs-a=1", "null=1,null=2"):
+        try:
+            deck.parse_strata(bad)
+        except ValueError:
+            print(f"  ok  rejects {bad!r}")
+        else:
+            raise AssertionError(f"accepted {bad!r}")
+    try:
+        deck.main(["build", "--scores-file", "x", "--strata", "nonsense"])
+    except SystemExit as e:
+        check("bad --strata exits 2", e.code, 2)
+    else:
+        raise AssertionError("bad --strata accepted")
+
+
+def test_preset_quotas():
+    st = deck.parse_strata(deck.PRESETS["skill-lift"])
+    check("preset quotas(20)", deck.quotas(20, st), [10, 4, 4, 2])
+    for n in (20, 10, 7, 1, 33):
+        check(f"preset quotas({n}) sum", sum(deck.quotas(n, st)), n)
+
+
+def test_preset_mutual_exclusion():
+    try:
+        deck.main(["build", "--preset", "skill-lift", "--strata", "a-vs-b=1", "--scores-file", "x"])
+    except SystemExit as e:
+        check("preset+strata exit code", e.code, 2)
+    else:
+        raise AssertionError("no error")
+
+
+def test_preset_build_and_report():
+    layers = ["skills", "skills~forced", "skills~trigger", "bare"]
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, ntasks=0)
+        for i in range(12):
+            task = f"alpha/t{i:02d}"
+            d = fx.tasks / task
+            d.mkdir(parents=True)
+            (d / "prompt.md").write_text(f"Summarize widget report {i}.")
+            (d / "rubric.md").write_text("1 point per fact.")
+            for rung in layers:
+                for k in (1, 2):
+                    fx.add(task, rung, k, i % 3 != 0, f"Widget answer {i} {rung} {k}.")
+        # a default-rung-only run set has no custom pairs; the preset must still pick these variant layers
+        st = deck.parse_strata(deck.PRESETS["skill-lift"])
+        _, dk, key = deck.build(fx.scores_file(), 1, 20, fx.runs, fx.tasks, fx.human, "P1", strata=st)
+        check("n=20 filled", len(dk), 20)
+        want = {"skills-vs-skills~forced": ("skills", "skills~forced"),
+                "skills-vs-skills~trigger": ("skills", "skills~trigger"),
+                "bare-vs-skills~forced": ("bare", "skills~forced")}
+        c = counts(key)
+        assert set(c) <= {n for n, _ in st}, c
+        for e in key.values():
+            if e["stratum"] in want:
+                check("layers", tuple(sorted(e["layers"].values(), key=deck._rung_key)),
+                      tuple(sorted(want[e["stratum"]], key=deck._rung_key)))
+            else:
+                assert e["stratum"] == "null" and e["layers"]["A"] == e["layers"]["B"], e
+        assert c.get("skills-vs-skills~forced", 0) >= 10 and c.get("null", 0) >= 1, c
+        for pid in key:
+            fx.pick(pid, "A", "P1")
+        rep = deck.report("P1", fx.human, fx.runs)
+        check("report counted all", rep["n_picks"], 20)
+        assert "skills>skills~forced" in rep["win_rates"] and "bare>skills~forced" in rep["win_rates"], rep["win_rates"]
+        # default build on the same scores ignores variant layers entirely (default path unchanged)
+        _, dk2, key2 = fx.build(n=5, ts="P2", human=fx.human / "d")
+        assert all(set(e["layers"].values()) <= {"skills", "bare"} for e in key2.values()), key2
+        # zero pairs: clean SystemExit naming the strata
+        try:
+            deck.build(fx.scores_file(), 1, 4, fx.runs, fx.tasks, fx.human / "z", "Z",
+                       strata=[("memory-vs-full", 4)])
+        except SystemExit as e:
+            check("zero pairs msg", str(e), "no eligible pairs: nothing written (strata: memory-vs-full=4)")
+        else:
+            raise AssertionError("no SystemExit")
+
+
 def test_fill_forward():
     with tempfile.TemporaryDirectory() as tmp:
         fx = Fixture(tmp, mem_passes=False)  # memory never passes: stratum 0 empty, 1 has candidates
@@ -583,6 +677,11 @@ if __name__ == "__main__":
     test_candidates_no_rebind()
     test_quotas_literal()
     test_strata_quotas()
+    test_strata_default_unchanged()
+    test_strata_parse()
+    test_preset_quotas()
+    test_preset_mutual_exclusion()
+    test_preset_build_and_report()
     test_fill_forward()
     test_build_zero_pairs()
     test_exclusions()
