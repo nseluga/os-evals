@@ -65,6 +65,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from contamination import contamination_rules, find_contamination, scrub_env, workspace_name  # noqa: E402
 
+# Non-credential CLI knobs whose names trip the credential scrub (`TOKEN`). overnight.sh sets
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS on opus stages to bound a single runaway turn; without this
+# keep-list scrub_env would silently drop it and the cap would never reach the claude process.
+ENV_KEEP = {"CLAUDE_CODE_MAX_OUTPUT_TOKENS"}
+
 DEFAULT_WS_ROOT = "/Users/Shared/evalws"
 KNOWN_LAYERS = ("bare", "claude-md", "memory", "skills", "full")
 REPO_ROOT = Path(__file__).parent.parent
@@ -714,7 +719,7 @@ def run_one(
     cmd = build_cmd(model, extra_flags, task_meta, max_budget_usd, effort)
 
     # Only the claude subprocess gets the scrubbed env (setup.sh/restore keep the real one).
-    env = {**scrub_env(dict(os.environ), set(env_vars)), **env_vars}
+    env = {**scrub_env(dict(os.environ), set(env_vars) | ENV_KEEP), **env_vars}
     if _TOKEN:  # set by main(); bare also gets ANTHROPIC_AUTH_TOKEN (unconfirmed whether --bare reads the OAuth name)
         env["CLAUDE_CODE_OAUTH_TOKEN"] = _TOKEN
         if layer == "bare":
@@ -1417,7 +1422,7 @@ def main() -> int:
                   f"--effort <effort> --max-budget-usd {effective_budget(args.max_budget_usd, {})} --dangerously-skip-permissions")
             print(f"  env: {env}")
             print(f"  HOME: {env.get('HOME', '(real HOME, not isolated)')}")
-            gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars))))
+            gone = sorted(set(os.environ) - set(scrub_env(dict(os.environ), set(env_vars) | ENV_KEEP)))
             print(f"  env scrub: {len(gone)} variables removed" + (f" ({', '.join(gone)})" if gone else ""))
         print(f"total runs: {total}")
         metas = {t: read_task_meta(tasks_dir / t) for t, _, _ in plan}
