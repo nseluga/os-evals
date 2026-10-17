@@ -2,7 +2,7 @@ category: knowledge
 gate: knowledge
 group: skill-specific
 curated_skill: dt-qa
-trigger: "QA this and give a PASS/FAIL verdict:"
+trigger: "run QA on this plan item:"
 contaminated: false
 source: authored to target dt-qa skill — rung 4
 description: |
