@@ -88,7 +88,7 @@ def test_wall_estimate_arithmetic():
              {"task": "a", "base_model": "sonnet", "model": "sonnet:high", "wall_clock_sec": 0}]
     items = [{"task": "a", "model": "sonnet", "multi_turn": False}] * 4 + [{"task": "m", "model": "sonnet", "multi_turn": True}]
     secs, lack = rm.wall_estimate(hist, items, 2, 3.0)
-    check("4 one-shot x150 / 2 jobs + multi 1000, x3, none lacking", (secs, lack), ((4 * 150 / 2 + 1000) * 3, 0))
+    check("4 one-shot x150 / 2 jobs, x3; multi 1000 x3 / 4 (serial, per-run ratio); none lacking", (secs, lack), ((4 * 150 / 2) * 3 + 1000 * 3 / 4, 0))
     secs, lack = rm.wall_estimate(hist, [{"task": "zzz", "model": "claude-sonnet-4-6", "multi_turn": False}], 1, 1.0)
     check("no-history cell uses family mean (100,200,1000 -> 433.33) and counts", (round(secs, 2), lack), (433.33, 1))
     secs, lack = rm.wall_estimate([], [{"task": "q", "model": "opus", "multi_turn": False}], 4)

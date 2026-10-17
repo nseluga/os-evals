@@ -50,8 +50,9 @@ def select_pairs(rungs, order=None) -> list[tuple]:
     no order, ladder order is used. Fewer than two layers -> [].
 
     A knockout variant `<base>~<mod>` whose base is present is not part of the ladder; it adds one
-    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep)."""
-    present = set(rungs)
+    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep).
+    Arm variants (`~trigger`, `~forced[.<skill>]`) are dropped first: a forced win is no knockout loss."""
+    present = {r for r in rungs if not _arm_of(r)[1]}  # skills~trigger / skills~forced are Skill lift's, not ladder or knockout pairs
     if present and all(isinstance(r, int) for r in present):
         return [(lo, hi) for lo, hi in RUNG_PAIRS if lo in present and hi in present]
     var = sorted((r for r in present if "~" in str(r) and str(r).split("~")[0] in present), key=_rung_key)
@@ -604,20 +605,22 @@ def skill_lift_section(scores: list[dict]) -> list[str]:
     live = [s for s in scores if not _is_sentinel(s) and not _is_layer_neutral(s) and not _is_infra(s)]
     if not any(_arm_of(s["rung"])[1] for s in live):
         return []
-    eff = {(s["task"], s.get("model", ""), str(s["rung"]).split("@")[0]): s for s in _effective_scores(live)}
+    eff = {(s["task"], s.get("model", ""), str(s["rung"])): s for s in _effective_scores(live)}  # full rung: `@sha` stays
     costs: dict = defaultdict(list)
     for s in live:
         if not s.get("repeat_majority"):
-            costs[(s["task"], s.get("model", ""), str(s["rung"]).split("@")[0])].append(s.get("cost_usd") or 0)
+            costs[(s["task"], s.get("model", ""), str(s["rung"]))].append(s.get("cost_usd") or 0)
     rows: dict = defaultdict(lambda: {"pairs": [], "trig": [], "arms": set()})
 
     def label(s):
         sk = _arm_of(s["rung"])[2] or ((s.get("curated_skill") or "").split() or [""])[0]
         sk = "" if sk.lower() == "none" else sk
-        return (sk or "(none)") + (f" ({s['task']})" if s.get("multi_turn") else "")
+        sha = str(s["rung"]).partition("@")[2]  # A/B runs: one row per sha
+        return (sk or "(none)") + (f" ({s['task']})" if s.get("multi_turn") else "") + (f"@{sha}" if sha else "")
 
     for (task, model, rung), s in eff.items():
         base, arm, _ = _arm_of(rung)
+        base = base + rung[rung.index("@"):] if "@" in rung else base  # a forced run pairs with ITS sha's base
         if arm == "forced" and (task, model, base) in eff:
             rows[(label(s), model)]["pairs"].append((s, eff[(task, model, base)], costs[(task, model, rung)] or [0], costs[(task, model, base)] or [0]))
     for s in live:

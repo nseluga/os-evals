@@ -510,7 +510,7 @@ def test_wall_estimate_and_line():
     secs, lacking = rm.wall_estimate(hist, [one("a"), one("b")], jobs=2, factor=1.0)
     check("one-shot cells summed over jobs", (secs, lacking), ((150 + 50) / 2, 0))
     secs, lacking = rm.wall_estimate(hist, [one("a"), multi("b")], jobs=4, factor=2.0)
-    check("multi_turn added serially, factor multiplies", (secs, lacking), ((150 / 4 + 50) * 2.0, 0))
+    check("multi_turn cells serial at factor/STALL_MEASURED_JOBS (per-run ratio), one-shot /jobs", (secs, lacking), ((150 / 4 + 50 / 4) * 2.0, 0))
     secs, lacking = rm.wall_estimate(hist, [one("zzz")], jobs=1, factor=1.0)
     check("no cell history -> family mean of all its records, counted", (secs, lacking), (350 / 3, 1))
     secs, lacking = rm.wall_estimate(hist, [one("a", "fable")], jobs=1, factor=1.0)

@@ -306,7 +306,7 @@ def detect_skill_fired(events: list[dict], intended_skill: str):
     """Did the intended skill actually get invoked in this run?
 
     Returns True/False when there's an intended skill to check, else None (n/a).
-    A skill fires via the Skill tool (name=="Skill", input.skill/input.command names it).
+    A skill fires via the Skill tool (name=="Skill", input.skill/input.command names it exactly).
     The dev-team orchestrators also manifest by spawning their dt-* specialists as
     Task sub-agents, so a Task whose subagent/description names the skill counts too.
     Distinguishing a routing failure (skill never fired) from a skill failure is the
@@ -317,9 +317,9 @@ def detect_skill_fired(events: list[dict], intended_skill: str):
     if needle in ("", "none"):  # `curated_skill: none (...)` means no skill to check
         return None
     for name, inp in _iter_tool_uses(events):
-        if name == "Skill":
-            skill = str(inp.get("skill") or inp.get("command") or "").lower()
-            if needle in skill:
+        if name == "Skill":  # the exact skill name, optionally `<plugin>:`-prefixed: `dev-team-auto` is not `dev-team`
+            skill = str(inp.get("skill") or inp.get("command") or "").strip().lstrip("/").lower()
+            if needle in (skill, skill.partition(":")[2]):
                 return True
         # Direct/slash-command style match on the tool name itself.
         if needle in name.lower():
@@ -506,16 +506,30 @@ def variant_error(layers: list, configs_dir: Path, shas: list) -> str | None:
     return None
 
 
-def variant_applies(spec, curated_skill: str, trigger: str = "") -> bool:
+def arm_skip_need(spec, curated_skill: str, trigger: str = "", skills_dir: Path | None = None) -> str:
+    """Why an arm cell skips a task, as the "needs …" phrase of its notice ('' = it runs).
+    A plain arm needs the task's real curated_skill (not `none`), `skills~trigger` also its `trigger` meta, and,
+    when `skills_dir` (configs/<sha>/src/skills) is given, that skill's dir in the snapshot. An explicit
+    `forced.<skill>` is vetted once by variant_error (rc 2), never per task."""
+    arm, skill = parse_arm(parse_layer(spec)[1])
+    if not arm or skill:
+        return ""
+    cur = real_skill(curated_skill)
+    if arm == "trigger" and not (trigger and cur):
+        return "a `trigger` in meta.yaml and a curated_skill"
+    if not cur:
+        return "a curated_skill"
+    if skills_dir is not None and not (Path(skills_dir) / cur).exists():
+        return f"skill {cur!r} in {skills_dir}"
+    return ""
+
+
+def variant_applies(spec, curated_skill: str, trigger: str = "", skills_dir: Path | None = None) -> bool:
     """ko.<skill> runs only on tasks whose curated_skill (first token; 'none (…)' -> 'none') is that skill.
-    skills~trigger needs the task's `trigger` meta and a real curated_skill; skills~forced needs a real
-    curated_skill, or an explicit forced.<skill>."""
+    skills~trigger / skills~forced follow arm_skip_need (an explicit forced.<skill> applies to every task)."""
     mod = parse_layer(spec)[1]
-    arm, skill = parse_arm(mod)
-    if arm == "trigger":
-        return bool(trigger) and bool(real_skill(curated_skill))
-    if arm == "forced":
-        return bool(skill or real_skill(curated_skill))
+    if parse_arm(mod)[0]:
+        return not arm_skip_need(spec, curated_skill, trigger, skills_dir)
     return not mod.startswith("ko.") or (curated_skill.split() or [""])[0] == mod[3:]
 
 
@@ -852,6 +866,7 @@ def run_one(
         "timed_out": timed_out,
         "timeout_retries": timeout_retries,
         "no_result": no_result,
+        "prompt_head": prompt_text[:120],  # the stdin actually sent: a forced run shows its `/skill ` prefix
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
         "arm": arm,
@@ -1100,45 +1115,56 @@ def fit_block(ordered: list[tuple[dict, dict]], window_usd: float) -> list[str]:
 
 # Stall factor for the dry-run wall estimate: real stage wall / (summed elapsed_sec / jobs). Measured once, round 3
 # verdict-sonnet stage (overnight-logs/20261016T100122Z.log vs scorecards/20261016T105903Z-6749312.scores.json):
-# stage span 03:59:03 -> 10:39:39 PDT = 24036 s; 151 runs, summed elapsed_sec 6014.4 s; run at --jobs 4, so the
-# ideal parallel wall was 6014.4 / 4 = 1503.6 s and 24036 / 1503.6 = 15.99 -> 16.0. elapsed_sec times only the claude
-# subprocess; workspace restore, setup.sh, config copies and pool idle between runs are the rest. (The raw ratio
-# span / summed elapsed is 4.0, which applied to elapsed / jobs would under-estimate round 3 by the jobs factor.)
+# stage span 03:59:03 -> 10:39:39 PDT = 24036 s; 151 runs (ALL one-shot, 0 multi_turn), summed elapsed_sec 6014.4 s;
+# run at --jobs 4 (STALL_MEASURED_JOBS), so the ideal parallel wall was 6014.4 / 4 = 1503.6 s and 24036 / 1503.6 = 15.99
+# -> 16.0. elapsed_sec times only the claude subprocess; workspace restore, setup.sh, config copies and pool idle
+# between runs are the rest. The factor therefore already contains the /4 of that jobs value: the per-run ratio
+# span / summed elapsed is 4.0 (= 16 / STALL_MEASURED_JOBS), which is what a serial multi_turn cell gets. One-shot
+# cells at --jobs != 4 are NOT recalibrated (the estimate divides by `jobs` but the real stall did not scale with it).
 STALL_FACTOR = 16.0
+STALL_MEASURED_JOBS = 4
 
 
 def wall_estimate(history_records: list[dict], items: list[dict], jobs: int, factor: float = STALL_FACTOR) -> tuple[float, int]:
-    """(estimated wall seconds, cells with no history of their own).
+    """(estimated wall seconds, distinct (task, layer, model, effort) cells with no history of their own).
 
-    Per (task, model family): mean wall_clock_sec of the prior non-infra, non-skipped individual records.
-    A cell with none uses the mean of its model family over all tasks (any family, if the family has no
-    history at all) and counts as lacking. One-shot cells are summed and divided by `jobs`, multi_turn cells
-    run serially and are added, and the total is multiplied by `factor`."""
+    Per (task, model family): mean wall_clock_sec of the prior records, deduped by their `file` (MERGED-* and
+    `-rescored` scorecards repeat records) and without infra, skipped, majority, zero-wall or rejected ones. A rejected
+    run is `is_error` with no cost and no timeout: the API refused the request (the July 429s, 0.7-5 s, scored
+    infra_error False before rate-limit classification existed) before any model spend; a timeout keeps its wall.
+    A cell with no history uses the mean of its model family over all tasks (any family, if the family has none)
+    and counts as lacking. One-shot cells are summed, divided by `jobs` and multiplied by `factor`; multi_turn cells
+    run serially, so each gets `factor / STALL_MEASURED_JOBS` (the per-run ratio) instead."""
     from stats import _base_effort  # lazy: stats imports score, which imports this module
-    by_cell, by_fam, every = defaultdict(list), defaultdict(list), []
+    by_cell, by_fam, every, seen = defaultdict(list), defaultdict(list), [], set()
     for r in history_records:
+        if r.get("file"):
+            if r["file"] in seen:
+                continue
+            seen.add(r["file"])
         w = r.get("wall_clock_sec") or 0
-        if r.get("repeat_majority") or r.get("infra_error") or r.get("infra_reason") == "skipped" or w <= 0:
+        if r.get("repeat_majority") or r.get("infra_error") or r.get("infra_reason") == "skipped" or w <= 0 \
+                or (r.get("is_error") and not r.get("cost_usd") and not r.get("timed_out")):
             continue
         fam = _model_family(_base_effort(r)[0])
         by_cell[(r.get("task"), fam)].append(w)
         by_fam[fam].append(w)
         every.append(w)
     one = multi = 0.0
-    lacking = 0
+    lacking = set()
     for it in items:
         fam = _model_family(it["model"])
         if (it["task"], fam) in by_cell:
             w = statistics.mean(by_cell[(it["task"], fam)])
         else:
-            lacking += 1
+            lacking.add((it["task"], it.get("layer"), it["model"], it.get("effort")))
             pool = by_fam.get(fam) or every
             w = statistics.mean(pool) if pool else 0.0
         if it["multi_turn"]:
             multi += w
         else:
             one += w
-    return (one / max(1, jobs) + multi) * factor, lacking
+    return (one / max(1, jobs) + multi / STALL_MEASURED_JOBS) * factor, len(lacking)
 
 
 def wall_line(secs: float, factor: float, lacking: int) -> str:
@@ -1335,26 +1361,19 @@ def main() -> int:
 
     tasks = [t for t in tasks if t]
 
-    for spec in layers:  # a bare skills~forced needs at least one task with a curated skill to force
-        arm, skill = parse_arm(parse_layer(spec)[1])
-        if arm == "forced" and not skill and tasks and not any(
-                real_skill(read_task_meta(tasks_dir / t)["curated_skill"]) for t in tasks):
-            print(f"run_matrix: ERROR {spec!r}: no selected task has a curated_skill to force "
-                  f"(all 'none'); name one with {spec}.<skill> or pick a task that has one", file=sys.stderr)
-            return 2
-
     print(f"run_matrix: tasks={tasks} cells={[c[2] for c in cells]} models={models}")
 
     # Sentinel tasks are difficulty anchors: run on the bare layer only (never in A/B).
     plan = []
     for task in tasks:
         task_meta = read_task_meta(tasks_dir / task)
+        sdir = lambda c: configs_dir / c[1] / "src" / "skills"  # noqa: E731  the cell's snapshot skills dir
         task_cells = [c for c in cells if (c[0] == "bare" or not task_meta["sentinel"])
-                      and variant_applies(c[0], task_meta["curated_skill"], task_meta["trigger"])]
-        for c in cells:  # arm cells are skipped loudly: a missing `trigger` is a task to fix, not a quiet 0
-            if parse_arm(parse_layer(c[0])[1])[0] and not variant_applies(c[0], task_meta["curated_skill"], task_meta["trigger"]):
-                need = "a `trigger` in meta.yaml and a curated_skill" if parse_arm(parse_layer(c[0])[1])[0] == "trigger" else "a curated_skill"
-                print(f"  {c[0]}: {task} — skipped (needs {need})")
+                      and variant_applies(c[0], task_meta["curated_skill"], task_meta["trigger"], sdir(c))]
+        for c in cells:  # arm cells are skipped loudly (never rc 2, even if no task qualifies): a task to fix, not a quiet 0
+            need = arm_skip_need(c[0], task_meta["curated_skill"], task_meta["trigger"], sdir(c))
+            if need:
+                print(f"  {c[2]}: {task} — skipped (needs {need})")
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
         if task_meta["layer_neutral"]:  # bare only like a sentinel, but kept in the frontier/cost tables

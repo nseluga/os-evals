@@ -357,8 +357,8 @@ def test_arm_variant_guards():
         (Path(d) / "tasks" / "trig" / "meta.yaml").write_text('curated_skill: quote\ntrigger: "quote this:"\n')
         run = lambda tasks, layers: _cli(*base, "--tasks", tasks, "--layers", layers)  # noqa: E731
         r = run("ok", "skills,skills~forced")
-        check("forced with curated_skill none exits 2", r.returncode, 2)
-        assert "no selected task has a curated_skill" in r.stderr, r.stderr
+        check("forced with curated_skill none: skipped with a notice, rc 0 (was rc 2 before the skip-not-abort rule)", r.returncode, 0)
+        assert "skills~forced: ok \u2014 skipped (needs a curated_skill)" in r.stdout, r.stdout
         r = run("curated", "skills,skills~forced.nosuchskill")
         check("forced.nosuchskill exits 2", r.returncode, 2)
         assert "no skill 'nosuchskill'" in r.stderr, r.stderr

@@ -307,8 +307,8 @@ def test_run_sh_refuses_before_archive():
 def test_arm_pairs_after_ladder():
     allr = {"bare", "skills", "skills~trigger", "skills~forced", "skills~forced.dev-team"}
     order = ["bare", "skills", "skills~trigger", "skills~forced", "skills~forced.dev-team"]
-    check("each arm pairs with its base after the ladder pair", stats.select_pairs(allr, order),
-          [("bare", "skills"), ("skills~forced", "skills"), ("skills~forced.dev-team", "skills"), ("skills~trigger", "skills")])
+    check("arms are Skill lift's: no knockout pair, only the ladder pair (was: each arm paired with its base)",
+          stats.select_pairs(allr, order), [("bare", "skills")])
 
 
 def _lift(task, rung, passed, cost=0.1, judge=None, fired=None, model="sonnet:high", curated="humanizer", multi_turn=False, **kw):
