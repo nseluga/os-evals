@@ -304,7 +304,53 @@ def test_run_sh_refuses_before_archive():
         check("current-wrapper dry run: exit, no warning", [p.returncode, "pre-1.8" in p.stdout], [0, False])
 
 
+def test_arm_pairs_after_ladder():
+    allr = {"bare", "skills", "skills~trigger", "skills~forced", "skills~forced.dev-team"}
+    order = ["bare", "skills", "skills~trigger", "skills~forced", "skills~forced.dev-team"]
+    check("each arm pairs with its base after the ladder pair", stats.select_pairs(allr, order),
+          [("bare", "skills"), ("skills~forced", "skills"), ("skills~forced.dev-team", "skills"), ("skills~trigger", "skills")])
+
+
+def _lift(task, rung, passed, cost=0.1, judge=None, fired=None, model="sonnet:high", curated="humanizer", multi_turn=False, **kw):
+    r = {"task": task, "rung": rung, "passed": passed, "model": model, "base_model": model.split(":")[0], "cost_usd": cost,
+         "curated_skill": curated, "multi_turn": multi_turn, "skill_fired": fired, "infra_error": False}
+    if judge is not None:
+        r["judge"] = {"score": judge}
+    r.update(kw)
+    return r
+
+
+def test_skill_lift_section():
+    scores = [
+        _lift("a", "skills", False, 0.10, judge=2), _lift("a", "skills~forced", True, 0.30, judge=4), _lift("a", "skills~trigger", False, fired=False),
+        _lift("b", "skills", True, 0.20, judge=3), _lift("b", "skills~forced", True, 0.20, judge=3), _lift("b", "skills~trigger", True, fired=True),
+        _lift("o", "skills", False, 1.0, curated="dev-team", multi_turn=True), _lift("o", "skills~forced", True, 2.0, curated="dev-team", multi_turn=True),
+        _lift("x", "skills", True, curated="none"), _lift("x", "skills~forced", False, curated="none", infra_error=True),  # infra: dropped
+    ]
+    lines = stats.skill_lift_section(scores)
+    text = "\n".join(lines)
+    check("heading present", lines[0], "## Skill lift")
+    rows = {ln.split("|")[1].strip(): [c.strip() for c in ln.split("|")[2:-1]] for ln in lines if ln.startswith("| ") and "---" not in ln and "Skill |" not in ln}
+    check("humanizer row: 2 pairs, +50pp, judge +1.00, $ +0.1000, routing 1/2",
+          rows["humanizer"], ["sonnet:high", "2", "+50pp", "+1.00", "$+0.1000", "1/2"])
+    check("orchestrate task gets its own row", rows["dev-team (o)"], ["sonnet:high", "1", "+100pp", "n/a", "$+1.0000", "n/a"])
+    check("infra pair dropped: no row for the none skill", "(none)" in rows, False)
+    full = stats.render_markdown({"scores": scores, "os_sha": "x"}, stats.compute_stats(scores, ["skills", "skills~forced"]), stats.token_summary(scores))
+    check("render_markdown carries the section", "## Skill lift" in full, True)
+    plain = [s for s in scores if "~" not in s["rung"]]
+    check("no arm runs -> section omitted", stats.skill_lift_section(plain), [])
+    check("...and absent from the scorecard", "## Skill lift" in stats.render_markdown(
+        {"scores": plain, "os_sha": "x"}, stats.compute_stats(plain), stats.token_summary(plain)), False)
+    ko = plain + [_lift("a", "skills~ko.humanizer", True)]
+    check("a ko variant is not an arm", stats.skill_lift_section(ko), [])
+    check("explicit forced.<skill> labels by that skill",
+          "| dev-team | sonnet:high | 1 |" in "\n".join(stats.skill_lift_section(
+              [_lift("a", "skills", False), _lift("a", "skills~forced.dev-team", True)])), True)
+
+
 if __name__ == "__main__":
+    test_arm_pairs_after_ladder()
+    test_skill_lift_section()
     test_pairs_follow_user_order()
     test_ab_pairing_with_sentinel_bare()
     test_legacy_int_pairs()

@@ -41,7 +41,8 @@ Inputs:
                timestamp); a stopped matrix's `skipped` stubs are replaced on re-run.
 
 meta.yaml keys read here: timeout_sec, multi_turn, curated_skill, sentinel, repeat,
-default (false => skipped unless named in --tasks), tools (none => `--tools ""`).
+default (false => skipped unless named in --tasks), tools (none => `--tools ""`; read => `--tools "Skill,Read,Glob,Grep"`),
+trigger / forced_note (single-line double-quoted strings used by the skills~trigger / skills~forced arms).
 max_budget_usd (per-task cap, used only when --max-budget-usd is not given), layer_neutral (bare only, kept in the frontier),
 judge_files / signals (passed through to _meta).
 """
@@ -182,13 +183,15 @@ def read_task_meta(task_dir: Path) -> dict:
       multi_turn   — if true, capture the full event stream (stream-json) and give
                      the run a real git repo so orchestrator skills can branch/worktree.
       default      — false => excluded from the no-`--tasks` default set (still runs if named).
-      tools        — `none` => claude gets `--tools ""` (no tools at all).
+      tools        — `none` => claude gets `--tools ""` (no tools at all); `read` => `--tools "Skill,Read,Glob,Grep"`.
+      trigger      — skills~trigger arm: prepended to the prompt (then a blank line).
+      forced_note  — skills~forced arm: appended to the prompt (after a blank line) when set.
       curated_skill— the skill this task is meant to exercise; used to detect whether
                      that skill actually fired (routing check).
     """
     out = {"timeout_sec": 1800, "multi_turn": False, "curated_skill": "", "sentinel": False, "repeat": 1,
            "default": True, "tools": "", "layer_neutral": False, "max_budget_usd": None,
-           "judge_files": "", "signals": ""}
+           "judge_files": "", "signals": "", "trigger": "", "forced_note": ""}
     meta_file = task_dir / "meta.yaml"
     if not meta_file.exists():
         return out
@@ -220,6 +223,10 @@ def read_task_meta(task_dir: Path) -> dict:
                 out["max_budget_usd"] = float(s.split(":", 1)[1].split("#", 1)[0].strip())
             except ValueError:
                 pass
+        elif s.startswith(("trigger:", "forced_note:")):  # single-line double-quoted strings
+            k, v = s.split(":", 1)
+            m = re.fullmatch(r'\s*"(.*)"\s*(#.*)?', v)
+            out[k] = m.group(1) if m else v.split(" #", 1)[0].strip().strip('"')
         elif s.startswith(("judge_files:", "signals:")):  # passed through to _meta; other items parse them
             k, v = s.split(":", 1)
             out[k] = v.split(" #", 1)[0].strip().strip("'\"")
@@ -306,9 +313,9 @@ def detect_skill_fired(events: list[dict], intended_skill: str):
     whole point of rung 4 — a run where the skill never triggered is not evidence about
     the skill's value.
     """
-    if not intended_skill:
+    needle = (intended_skill or "").strip().lower()
+    if needle in ("", "none"):  # `curated_skill: none (...)` means no skill to check
         return None
-    needle = intended_skill.lower()
     for name, inp in _iter_tool_uses(events):
         if name == "Skill":
             skill = str(inp.get("skill") or inp.get("command") or "").lower()
@@ -447,6 +454,27 @@ def parse_layer(spec) -> tuple[str, str]:
     return base, mod
 
 
+ARM_SKILL_RE = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+
+
+def parse_arm(mod: str) -> tuple[str, str]:
+    """Layer mod -> (arm, explicit skill): 'trigger' -> ('trigger', ''), 'forced' -> ('forced', ''),
+    'forced.<skill>' -> ('forced', '<skill>'); anything else (or a malformed skill) -> ('', '')."""
+    if mod == "trigger":
+        return "trigger", ""
+    if mod == "forced":
+        return "forced", ""
+    if mod.startswith("forced.") and re.fullmatch(ARM_SKILL_RE, mod[7:]):
+        return "forced", mod[7:]
+    return "", ""
+
+
+def real_skill(curated_skill: str) -> str:
+    """First token of curated_skill ('none (…)' -> '' since none means no skill)."""
+    tok = (curated_skill.split() or [""])[0]
+    return "" if tok.lower() == "none" else tok
+
+
 def variant_error(layers: list, configs_dir: Path, shas: list) -> str | None:
     """First problem with the knockout variants in `layers` (None if fine). Pure: run_matrix exits 2 on it."""
     for spec in layers:
@@ -466,15 +494,48 @@ def variant_error(layers: list, configs_dir: Path, shas: list) -> str | None:
             for sha in shas:
                 if not (configs_dir / sha / "src" / "skills" / mod[3:]).exists():
                     return f"{spec!r}: no skill {mod[3:]!r} in {configs_dir / sha / 'src' / 'skills'}"
+        elif parse_arm(mod)[0]:
+            arm, skill = parse_arm(mod)
+            if base not in KO_BASES:
+                return f"{spec!r}: {arm} needs a base with skills ({', '.join(KO_BASES)}), not {base!r}"
+            for sha in shas if skill else []:
+                if not (configs_dir / sha / "src" / "skills" / skill).exists():
+                    return f"{spec!r}: no skill {skill!r} in {configs_dir / sha / 'src' / 'skills'}"
         else:
-            return f"unknown variant {mod!r} in {spec!r}; known: nohook, ko.<skill>"
+            return f"unknown variant {mod!r} in {spec!r}; known: nohook, ko.<skill>, trigger, forced[.<skill>]"
     return None
 
 
-def variant_applies(spec, curated_skill: str) -> bool:
-    """ko.<skill> runs only on tasks whose curated_skill (first token; 'none (…)' -> 'none') is that skill."""
+def variant_applies(spec, curated_skill: str, trigger: str = "") -> bool:
+    """ko.<skill> runs only on tasks whose curated_skill (first token; 'none (…)' -> 'none') is that skill.
+    skills~trigger needs the task's `trigger` meta and a real curated_skill; skills~forced needs a real
+    curated_skill, or an explicit forced.<skill>."""
     mod = parse_layer(spec)[1]
+    arm, skill = parse_arm(mod)
+    if arm == "trigger":
+        return bool(trigger) and bool(real_skill(curated_skill))
+    if arm == "forced":
+        return bool(skill or real_skill(curated_skill))
     return not mod.startswith("ko.") or (curated_skill.split() or [""])[0] == mod[3:]
+
+
+def arm_prompt(prompt_text: str, mod: str, task_meta: dict) -> tuple[str, str, str]:
+    """(stdin prompt, arm, forced skill) for a layer mod. trigger: meta `trigger` + blank line + prompt.
+    forced: '/<skill> ' + prompt (+ blank line + meta `forced_note` when set). Other mods: prompt unchanged."""
+    arm, skill = parse_arm(mod)
+    if arm == "trigger":
+        if not task_meta.get("trigger"):
+            raise ValueError("skills~trigger needs a `trigger` in the task's meta.yaml")
+        return task_meta["trigger"] + "\n\n" + prompt_text, arm, ""
+    if arm == "forced":
+        skill = skill or real_skill(task_meta.get("curated_skill", ""))
+        if not skill:
+            raise ValueError("skills~forced needs a curated_skill in meta.yaml or an explicit forced.<skill>")
+        text = f"/{skill} {prompt_text}"
+        if task_meta.get("forced_note"):
+            text += "\n\n" + task_meta["forced_note"]
+        return text, arm, skill
+    return prompt_text, "", ""
 
 
 def rung_dir(configs_dir: Path, layer, os_sha: str = "") -> Path:
@@ -503,7 +564,7 @@ def build_run_config(template: Path, cfg: Path, mod: str | None = None) -> None:
     symlink for a directory of per-skill symlinks without <skill> (agents/ likewise, minus <skill>.md)."""
     import shutil
     ko = mod[3:] if mod and mod.startswith("ko.") else None
-    if mod and mod != "nohook" and ko is None:
+    if mod and mod != "nohook" and ko is None and not parse_arm(mod)[0]:  # trigger/forced change the prompt, not the config
         raise ValueError(f"unknown variant {mod!r}")
     shutil.rmtree(cfg, ignore_errors=True)
     cfg.mkdir(parents=True)
@@ -593,6 +654,8 @@ def build_cmd(model: str, extra_flags: list[str], task_meta: dict,
         cmd.extend(["--effort", effort])
     if task_meta.get("tools") == "none":
         cmd.extend(["--tools", ""])
+    elif task_meta.get("tools") == "read":
+        cmd.extend(["--tools", "Skill,Read,Glob,Grep"])
     cmd.extend(["--max-budget-usd", str(effective_budget(max_budget_usd, task_meta))])
     cmd.extend(["--dangerously-skip-permissions"])
     return cmd
@@ -684,6 +747,7 @@ def run_one(
 
     with open(prompt_file) as f:
         prompt_text = f.read()
+    prompt_text, arm, forced_skill = arm_prompt(prompt_text, mod, task_meta)
 
     stdout = stderr = ""
     returncode = -1
@@ -754,6 +818,8 @@ def run_one(
     elapsed_sec = round(time.monotonic() - _t0, 1)
 
     skill_fired = detect_skill_fired(events, intended_skill)  # None when the task has no curated_skill
+    if arm == "forced":  # a literal `/skill` prefix expands in the CLI and leaves no trace marker: fired by construction
+        skill_fired = True
     isolated = "HOME" in env_vars
     forbidden, allowed, tilde_root = contamination_rules(
         REPO_ROOT, Path.home(), configs_dir, task_dir, layer, os_sha, str(run_dir), isolated,
@@ -788,6 +854,8 @@ def run_one(
         "no_result": no_result,
         "intended_skill": intended_skill,
         "skill_fired": skill_fired,
+        "arm": arm,
+        "forced_skill": forced_skill,
         "layer_neutral": task_meta["layer_neutral"],
         "judge_files": task_meta["judge_files"],
         "signals": task_meta["signals"],
@@ -886,10 +954,10 @@ def _layer_spec(rung) -> str:
 
 
 def _model_family(model) -> str:
-    """opus/sonnet/haiku for any model id or alias (`claude-sonnet-4-6` -> `sonnet`); anything else unchanged.
+    """opus/sonnet/haiku/fable for any model id or alias (`claude-sonnet-4-6` -> `sonnet`); anything else unchanged.
     History holds full ids, `--models` passes aliases: keys must match across both."""
     m = str(model).lower()
-    return next((f for f in ("opus", "sonnet", "haiku") if f in m), str(model))
+    return next((f for f in ("opus", "sonnet", "haiku", "fable") if f in m), str(model))
 
 
 def family_ratios(history_records: list[dict]) -> dict:
@@ -1030,6 +1098,54 @@ def fit_block(ordered: list[tuple[dict, dict]], window_usd: float) -> list[str]:
     return lines
 
 
+# Stall factor for the dry-run wall estimate: real stage wall / (summed elapsed_sec / jobs). Measured once, round 3
+# verdict-sonnet stage (overnight-logs/20261016T100122Z.log vs scorecards/20261016T105903Z-6749312.scores.json):
+# stage span 03:59:03 -> 10:39:39 PDT = 24036 s; 151 runs, summed elapsed_sec 6014.4 s; run at --jobs 4, so the
+# ideal parallel wall was 6014.4 / 4 = 1503.6 s and 24036 / 1503.6 = 15.99 -> 16.0. elapsed_sec times only the claude
+# subprocess; workspace restore, setup.sh, config copies and pool idle between runs are the rest. (The raw ratio
+# span / summed elapsed is 4.0, which applied to elapsed / jobs would under-estimate round 3 by the jobs factor.)
+STALL_FACTOR = 16.0
+
+
+def wall_estimate(history_records: list[dict], items: list[dict], jobs: int, factor: float = STALL_FACTOR) -> tuple[float, int]:
+    """(estimated wall seconds, cells with no history of their own).
+
+    Per (task, model family): mean wall_clock_sec of the prior non-infra, non-skipped individual records.
+    A cell with none uses the mean of its model family over all tasks (any family, if the family has no
+    history at all) and counts as lacking. One-shot cells are summed and divided by `jobs`, multi_turn cells
+    run serially and are added, and the total is multiplied by `factor`."""
+    from stats import _base_effort  # lazy: stats imports score, which imports this module
+    by_cell, by_fam, every = defaultdict(list), defaultdict(list), []
+    for r in history_records:
+        w = r.get("wall_clock_sec") or 0
+        if r.get("repeat_majority") or r.get("infra_error") or r.get("infra_reason") == "skipped" or w <= 0:
+            continue
+        fam = _model_family(_base_effort(r)[0])
+        by_cell[(r.get("task"), fam)].append(w)
+        by_fam[fam].append(w)
+        every.append(w)
+    one = multi = 0.0
+    lacking = 0
+    for it in items:
+        fam = _model_family(it["model"])
+        if (it["task"], fam) in by_cell:
+            w = statistics.mean(by_cell[(it["task"], fam)])
+        else:
+            lacking += 1
+            pool = by_fam.get(fam) or every
+            w = statistics.mean(pool) if pool else 0.0
+        if it["multi_turn"]:
+            multi += w
+        else:
+            one += w
+    return (one / max(1, jobs) + multi) * factor, lacking
+
+
+def wall_line(secs: float, factor: float, lacking: int) -> str:
+    h, m = divmod(round(secs / 60), 60)
+    return f"est wall: {h}h {m}m (factor {factor:g}, {lacking} cells lack history)"
+
+
 class MatrixBudget:
     """Shared by every worker thread: running nominal $ across the matrix, and the stop switch.
 
@@ -1163,6 +1279,8 @@ def main() -> int:
     parser.add_argument("--window-usd", type=float, default=100.0, help="window budget for the --dry-run fit verdict")
     parser.add_argument("--resume", action="store_true", help="skip cells that already have a valid _meta in --runs-dir")
     parser.add_argument("--scorecards-dir", default=str(REPO_ROOT / "scorecards"))
+    parser.add_argument("--stall-factor", type=float, default=STALL_FACTOR,
+                        help="--dry-run wall estimate multiplier over (summed history elapsed / --jobs); default measured from round 3")
     args = parser.parse_args()
     efforts = [e for e in args.effort.split(",") if e]
     bad_e = [e for e in efforts if e not in EFFORTS]
@@ -1217,6 +1335,14 @@ def main() -> int:
 
     tasks = [t for t in tasks if t]
 
+    for spec in layers:  # a bare skills~forced needs at least one task with a curated skill to force
+        arm, skill = parse_arm(parse_layer(spec)[1])
+        if arm == "forced" and not skill and tasks and not any(
+                real_skill(read_task_meta(tasks_dir / t)["curated_skill"]) for t in tasks):
+            print(f"run_matrix: ERROR {spec!r}: no selected task has a curated_skill to force "
+                  f"(all 'none'); name one with {spec}.<skill> or pick a task that has one", file=sys.stderr)
+            return 2
+
     print(f"run_matrix: tasks={tasks} cells={[c[2] for c in cells]} models={models}")
 
     # Sentinel tasks are difficulty anchors: run on the bare layer only (never in A/B).
@@ -1224,7 +1350,11 @@ def main() -> int:
     for task in tasks:
         task_meta = read_task_meta(tasks_dir / task)
         task_cells = [c for c in cells if (c[0] == "bare" or not task_meta["sentinel"])
-                      and variant_applies(c[0], task_meta["curated_skill"])]
+                      and variant_applies(c[0], task_meta["curated_skill"], task_meta["trigger"])]
+        for c in cells:  # arm cells are skipped loudly: a missing `trigger` is a task to fix, not a quiet 0
+            if parse_arm(parse_layer(c[0])[1])[0] and not variant_applies(c[0], task_meta["curated_skill"], task_meta["trigger"]):
+                need = "a `trigger` in meta.yaml and a curated_skill" if parse_arm(parse_layer(c[0])[1])[0] == "trigger" else "a curated_skill"
+                print(f"  {c[0]}: {task} — skipped (needs {need})")
         if task_meta["sentinel"] and len(task_cells) < len(cells):
             print(f"  sentinel: {task} — bare layer only" if task_cells else f"  sentinel: {task} — skipped (no bare layer)")
         if task_meta["layer_neutral"]:  # bare only like a sentinel, but kept in the frontier/cost tables
@@ -1275,6 +1405,9 @@ def main() -> int:
         no_tools = sorted(t for t, m in metas.items() if m["tools"] == "none")
         if no_tools:
             print(f'--tools "" added for: {", ".join(no_tools)}')
+        read_tools = sorted(t for t, m in metas.items() if m["tools"] == "read")
+        if read_tools:
+            print(f'--tools "Skill,Read,Glob,Grep" added for: {", ".join(read_tools)}')
         base_cap = effective_budget(args.max_budget_usd, {})
         for t, m in metas.items():
             if effective_budget(args.max_budget_usd, m) != base_cap:
@@ -1295,6 +1428,8 @@ def main() -> int:
         if args.resume:
             print(f"resume: {planned_items - len(items)} of {planned_items} cells already have a valid _meta in {runs_dir}; {len(items)} remain")
         print("\n".join(fit_block(ordered, args.window_usd)))
+        secs, lacking = wall_estimate([x for h in history for x in h], items, jobs, args.stall_factor)
+        print(wall_line(secs, args.stall_factor, lacking))
         return 0
 
     try:

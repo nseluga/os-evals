@@ -341,6 +341,102 @@ def test_skill_fired_agent_and_one_shot():
         check("_meta.layer_neutral", meta["layer_neutral"], True)
 
 
+def test_arm_variant_guards():
+    """skills~trigger / skills~forced[.<skill>]: accepted shapes, rc 2 refusals, skip rules."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _fixture(d)
+        for layer in ("memory", "skills"):
+            (Path(d) / "configs" / layer).mkdir()
+        (Path(d) / "configs" / "src" / "skills" / "quote").mkdir(parents=True)
+        (Path(d) / "tasks" / "ok" / "meta.yaml").write_text("curated_skill: none (no skill here)\n")
+        (Path(d) / "tasks" / "curated").mkdir()
+        (Path(d) / "tasks" / "curated" / "prompt.md").write_text("hi")
+        (Path(d) / "tasks" / "curated" / "meta.yaml").write_text("curated_skill: quote\n")
+        (Path(d) / "tasks" / "trig").mkdir()
+        (Path(d) / "tasks" / "trig" / "prompt.md").write_text("hi")
+        (Path(d) / "tasks" / "trig" / "meta.yaml").write_text('curated_skill: quote\ntrigger: "quote this:"\n')
+        run = lambda tasks, layers: _cli(*base, "--tasks", tasks, "--layers", layers)  # noqa: E731
+        r = run("ok", "skills,skills~forced")
+        check("forced with curated_skill none exits 2", r.returncode, 2)
+        assert "no selected task has a curated_skill" in r.stderr, r.stderr
+        r = run("curated", "skills,skills~forced.nosuchskill")
+        check("forced.nosuchskill exits 2", r.returncode, 2)
+        assert "no skill 'nosuchskill'" in r.stderr, r.stderr
+        r = run("curated", "memory,memory~forced")
+        check("forced on a base without skills exits 2", r.returncode, 2)
+        assert "forced needs a base with skills" in r.stderr, r.stderr
+        r = run("curated", "skills,skills~trigger,skills~forced")
+        check("trigger+forced plan exits 0", r.returncode, 0)
+        assert "skills~trigger: curated \u2014 skipped (needs a `trigger`" in r.stdout, r.stdout
+        assert "curated: 2 cells" in r.stdout and "'skills~forced'" in r.stdout, r.stdout
+        r = run("trig", "skills,skills~trigger,skills~forced")
+        check("task with trigger meta plans all 3 cells", "trig: 3 cells" in r.stdout, True)
+        r = run("ok", "skills,skills~forced.quote")
+        check("explicit forced.<skill> overrides a none task", (r.returncode, "ok: 2 cells" in r.stdout), (0, True))
+
+
+def test_arm_applies_and_prompt():
+    va = run_matrix.variant_applies
+    check("trigger needs trigger + real skill", [va("skills~trigger", "quote", "x"), va("skills~trigger", "quote", ""),
+                                                 va("skills~trigger", "none (x)", "x")], [True, False, False])
+    check("forced needs real skill or explicit one", [va("full~forced", "quote"), va("full~forced", "none (x)"), va("full~forced", ""),
+                                                     va("full~forced.quote", "none (x)")], [True, False, False, True])
+    check("ko unchanged", va("skills~ko.quote", "none (x)"), False)
+    meta = {"curated_skill": "dev-team (x)", "trigger": "humanize this:", "forced_note": "", "tools": "read"}
+    check("trigger prompt", run_matrix.arm_prompt("BODY\n", "trigger", meta), ("humanize this:\n\nBODY\n", "trigger", ""))
+    check("forced prompt uses the first curated token", run_matrix.arm_prompt("BODY", "forced", meta), ("/dev-team BODY", "forced", "dev-team"))
+    check("forced.<skill> overrides", run_matrix.arm_prompt("BODY", "forced.other", meta), ("/other BODY", "forced", "other"))
+    check("forced_note appended after a blank line",
+          run_matrix.arm_prompt("BODY", "forced", {**meta, "forced_note": "Be brief."})[0], "/dev-team BODY\n\nBe brief.")
+    check("other mods leave the prompt alone", run_matrix.arm_prompt("BODY", "nohook", meta), ("BODY", "", ""))
+    check("plain layer", run_matrix.arm_prompt("BODY", "", meta), ("BODY", "", ""))
+
+
+def test_tools_read_flag_and_meta_strings():
+    cmd = run_matrix.build_cmd("m", [], {"tools": "read"})
+    check("tools: read -> Skill,Read,Glob,Grep", cmd[cmd.index("--tools") + 1], "Skill,Read,Glob,Grep")
+    check("tools: none still empty", run_matrix.build_cmd("m", [], {"tools": "none"})[run_matrix.build_cmd("m", [], {"tools": "none"}).index("--tools") + 1], "")
+    check("no tools meta: no --tools flag", "--tools" in run_matrix.build_cmd("m", [], {"tools": ""}), False)
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d)
+        (t / "meta.yaml").write_text('tools: read\ntrigger: "humanize this:"  # note\nforced_note: "Reply only."\n'
+                                     'description: |\n  trigger: "indented prose"\n')
+        m = run_matrix.read_task_meta(t)
+        check("tools/trigger/forced_note parsed, quotes + comment stripped, indented ignored",
+              (m["tools"], m["trigger"], m["forced_note"]), ("read", "humanize this:", "Reply only."))
+        check("absent -> empty", run_matrix.read_task_meta(t / "nope")["trigger"], "")
+
+
+def test_arm_run_one_stdin_and_meta():
+    res = '{"type":"result","is_error":false,"result":"ok"}\n'
+    for layer, want_stdin, want_arm in [("skills~forced", "/humanizer BODY\n\nNOTE", "forced"),
+                                        ("skills~forced.other", "/other BODY\n\nNOTE", "forced"),
+                                        ("skills~trigger", "do it:\n\nBODY", "trigger")]:
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "tasks" / "t").mkdir(parents=True)
+            (d / "tasks" / "t" / "prompt.md").write_text("BODY")
+            (d / "tasks" / "t" / "meta.yaml").write_text('curated_skill: humanizer\ntrigger: "do it:"\nforced_note: "NOTE"\n')
+            (d / "configs" / "skills").mkdir(parents=True)
+            seen = {}
+            import subprocess as sp
+            orig = sp.run
+
+            def fake(cmd, **kw):
+                seen["input"] = kw.get("input")
+                return types.SimpleNamespace(stdout=res, stderr="", returncode=0)
+            sp.run = fake
+            try:
+                f = run_matrix.run_one("t", layer, "m", d / "tasks", d / "configs", d / "runs", ws_root=d / "ws")
+            finally:
+                sp.run = orig
+            meta = json.loads(f.read_text())["_meta"]
+        check(f"{layer}: stdin", seen["input"], want_stdin)
+        check(f"{layer}: _meta arm/forced_skill/rung", (meta["arm"], meta["forced_skill"], meta["rung"], meta["variant"]),
+              (want_arm, {"skills~forced": "humanizer", "skills~forced.other": "other"}.get(layer, ""), layer, layer.split("~")[1]))
+        check(f"{layer}: skill_fired", meta["skill_fired"], True if want_arm == "forced" else False)
+
+
 def test_layer_neutral_bare_only_dry_run():
     with tempfile.TemporaryDirectory() as d:
         base = _fixture(d)
@@ -366,6 +462,10 @@ if __name__ == "__main__":
     test_budget_dry_run_effective_cap()
     test_skill_fired_agent_and_one_shot()
     test_layer_neutral_bare_only_dry_run()
+    test_arm_variant_guards()
+    test_arm_applies_and_prompt()
+    test_tools_read_flag_and_meta_strings()
+    test_arm_run_one_stdin_and_meta()
     test_parser_survives_junk()
     test_guards()
     test_variant_guards()
