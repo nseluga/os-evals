@@ -2,7 +2,8 @@ category: analysis
 gate: capability
 contaminated: true
 group: knowledge-informed
-curated_skill: ai-usage-optimizer
+curated_skill: none (ai-use-optimizer lives in the anthropic-skills plugin, not ~/os; skill_fired n/a)
+# trigger/forced arms skipped: skill not in ~/os snapshot
 source: authored fixture modeled on the ai-usage-optimizer skill's own job
 description: |
   Exercises ai-usage-optimizer: given a snapshot of skills + memory + a usage log,

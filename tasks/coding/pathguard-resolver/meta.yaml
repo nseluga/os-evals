@@ -4,6 +4,7 @@ default: false  # excluded from the default task set; run with --tasks (Nate 202
 contaminated: false
 group: clean
 curated_skill: dev-team
+forced_note: "Unattended eval: this task class is blanket-authorized; write RUN.md if the skill asks for one and proceed without asking."
 multi_turn: true
 timeout_sec: 1800
 source: authored for the hard-task batch (iteration 2). Not from Nate's real repos —
