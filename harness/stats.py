@@ -50,8 +50,9 @@ def select_pairs(rungs, order=None) -> list[tuple]:
     no order, ladder order is used. Fewer than two layers -> [].
 
     A knockout variant `<base>~<mod>` whose base is present is not part of the ladder; it adds one
-    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep)."""
-    present = set(rungs)
+    (variant, base) pair after the ladder pairs (base beating the variant = the component earns its keep).
+    Arm variants (`~trigger`, `~forced[.<skill>]`) are dropped first: a forced win is no knockout loss."""
+    present = {r for r in rungs if not _arm_of(r)[1]}  # skills~trigger / skills~forced are Skill lift's, not ladder or knockout pairs
     if present and all(isinstance(r, int) for r in present):
         return [(lo, hi) for lo, hi in RUNG_PAIRS if lo in present and hi in present]
     var = sorted((r for r in present if "~" in str(r) and str(r).split("~")[0] in present), key=_rung_key)
@@ -577,6 +578,75 @@ def verdict_section(data: dict, scores: list[dict]) -> list[str]:
     return lines
 
 
+def _arm_of(rung) -> tuple[str, str, str]:
+    """(base, arm, explicit skill) of a rung label: `skills~forced.dev-team@abc` -> ('skills', 'forced', 'dev-team');
+    `skills~trigger` -> ('skills', 'trigger', ''); anything else -> (base, '', '')."""
+    base, _, mod = str(rung).split("@")[0].partition("~")
+    if mod == "trigger":
+        return base, "trigger", ""
+    if mod == "forced" or mod.startswith("forced."):
+        return base, "forced", mod[7:]
+    return base, "", ""
+
+
+def _judge_value(s: dict):
+    v = s.get("judge_mean") if s.get("repeat_majority") else (s.get("judge") or {}).get("score")
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+def skill_lift_section(scores: list[dict]) -> list[str]:
+    """`## Skill lift`: one row per (skill, model) from the skills~forced / skills~trigger arm runs; omitted ([]) without any.
+
+    Pairs are (task, model) cells with a valid forced-arm run and a valid run of its base layer (`skills`/`full`).
+    Pass delta is forced minus base pass rate (percentage points; majority records for repeats); judge delta is the
+    mean judge-score difference over pairs where both have one; $ delta is forced minus base mean per-run cost
+    (individual rows, never majority sums). Routing = share of trigger-arm runs whose skill actually fired.
+    A multi_turn (orchestrate) task gets its own row, `skill (task)`, since its skill is exercised on that task alone."""
+    live = [s for s in scores if not _is_sentinel(s) and not _is_layer_neutral(s) and not _is_infra(s)]
+    if not any(_arm_of(s["rung"])[1] for s in live):
+        return []
+    eff = {(s["task"], s.get("model", ""), str(s["rung"])): s for s in _effective_scores(live)}  # full rung: `@sha` stays
+    costs: dict = defaultdict(list)
+    for s in live:
+        if not s.get("repeat_majority"):
+            costs[(s["task"], s.get("model", ""), str(s["rung"]))].append(s.get("cost_usd") or 0)
+    rows: dict = defaultdict(lambda: {"pairs": [], "trig": [], "arms": set()})
+
+    def label(s):
+        sk = _arm_of(s["rung"])[2] or ((s.get("curated_skill") or "").split() or [""])[0]
+        sk = "" if sk.lower() == "none" else sk
+        sha = str(s["rung"]).partition("@")[2]  # A/B runs: one row per sha
+        return (sk or "(none)") + (f" ({s['task']})" if s.get("multi_turn") else "") + (f"@{sha}" if sha else "")
+
+    for (task, model, rung), s in eff.items():
+        base, arm, _ = _arm_of(rung)
+        base = base + rung[rung.index("@"):] if "@" in rung else base  # a forced run pairs with ITS sha's base
+        if arm == "forced" and (task, model, base) in eff:
+            rows[(label(s), model)]["pairs"].append((s, eff[(task, model, base)], costs[(task, model, rung)] or [0], costs[(task, model, base)] or [0]))
+    for s in live:
+        base, arm, _ = _arm_of(s["rung"])
+        if arm == "trigger" and not s.get("repeat_majority") and s.get("skill_fired") is not None:
+            rows[(label(s), s.get("model", ""))]["trig"].append(bool(s["skill_fired"]))
+    mean = lambda xs: sum(xs) / len(xs)  # noqa: E731
+    lines = ["## Skill lift", "",
+             "Forced arm (`/skill` prefix) vs its base layer; routing = trigger-arm runs where the skill fired. "
+             "Pass delta is in percentage points.", "",
+             "| Skill | Model | N pairs | Pass delta (forced-base) | Judge delta | $ delta | Routing (trigger fired) |",
+             "|-------|-------|---------|--------------------------|-------------|---------|-------------------------|"]
+    for (skill, model), row in sorted(rows.items()):
+        pairs, trig = row["pairs"], row["trig"]
+        if pairs:
+            pass_d = f"{100 * (mean([bool(f['passed']) for f, *_ in pairs]) - mean([bool(b['passed']) for _, b, *_ in pairs])):+.0f}pp"
+            jd = [_judge_value(f) - _judge_value(b) for f, b, *_ in pairs if _judge_value(f) is not None and _judge_value(b) is not None]
+            judge_d = f"{mean(jd):+.2f}" if jd else "n/a"
+            cost_d = f"${mean([mean(fc) for _, _, fc, _ in pairs]) - mean([mean(bc) for _, _, _, bc in pairs]):+.4f}"
+        else:
+            pass_d = judge_d = cost_d = "n/a"
+        routing = f"{sum(trig)}/{len(trig)}" if trig else "n/a"
+        lines.append(f"| {skill} | {model} | {len(pairs)} | {pass_d} | {judge_d} | {cost_d} | {routing} |")
+    return lines + [""]
+
+
 def _find_model(scores: list[dict], needle: str) -> str:
     """First model id containing `needle` (e.g. 'sonnet', 'opus'), else ''."""
     for m in sorted({s.get("model", "") for s in scores}):
@@ -889,6 +959,8 @@ def render_markdown(data: dict, stats: dict, token_stats: dict,
             lines.append("")
 
     lines += verdict_section(data, all_scores)
+
+    lines += skill_lift_section(all_scores)
 
     lines += cross_model_section(all_scores)
 

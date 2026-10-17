@@ -488,6 +488,58 @@ def test_main_stop_returns_1_and_resume_supersedes():
             rm.run_one, rm.oauth_token, sys.argv = orig
 
 
+def test_model_family_fable():
+    check("fable family", [rm._model_family(m) for m in ("claude-fable-5-1", "fable", "claude-opus-4-8")], ["fable", "fable", "opus"])
+    ests = rm.estimate_items([rec("a", "bare", "claude-fable-5-1", 4.0)], [item("a", "bare", "claude-fable-5-1")])
+    check("fable history is keyed by family", (ests[0]["est"], ests[0]["source"]), (4.0, "measured"))
+
+
+def _wrec(task, model, secs, **kw):
+    return {"task": task, "rung": "bare", "base_model": model, "model": f"{model}:high", "wall_clock_sec": secs, "infra_error": False, **kw}
+
+
+def test_wall_estimate_and_line():
+    check("stall factor pinned to the round-3 measurement (24036 / (6014.4 / 4))", rm.STALL_FACTOR, 16.0)
+    check("derivation", round(24036 / (6014.4 / 4)), 16)
+    hist = [_wrec("a", "claude-sonnet-4-6", 100), _wrec("a", "claude-sonnet-4-6", 200),       # a/sonnet mean 150
+            _wrec("b", "claude-sonnet-4-6", 50),                                              # b/sonnet 50 -> sonnet family mean of records 350/3
+            _wrec("a", "claude-sonnet-4-6", 9999, infra_error=True), _wrec("a", "claude-sonnet-4-6", 9999, repeat_majority=True),
+            _wrec("a", "claude-sonnet-4-6", 0)]                                               # infra, majority, zero: ignored
+    one = lambda t, m="sonnet": {**item(t, "bare", m), "multi_turn": False}  # noqa: E731
+    multi = lambda t, m="sonnet": {**item(t, "bare", m), "multi_turn": True}  # noqa: E731
+    secs, lacking = rm.wall_estimate(hist, [one("a"), one("b")], jobs=2, factor=1.0)
+    check("one-shot cells summed over jobs", (secs, lacking), ((150 + 50) / 2, 0))
+    secs, lacking = rm.wall_estimate(hist, [one("a"), multi("b")], jobs=4, factor=2.0)
+    check("multi_turn cells serial at factor/STALL_MEASURED_JOBS (per-run ratio), one-shot /jobs", (secs, lacking), ((150 / 4 + 50 / 4) * 2.0, 0))
+    secs, lacking = rm.wall_estimate(hist, [one("zzz")], jobs=1, factor=1.0)
+    check("no cell history -> family mean of all its records, counted", (secs, lacking), (350 / 3, 1))
+    secs, lacking = rm.wall_estimate(hist, [one("a", "fable")], jobs=1, factor=1.0)
+    check("family with no history -> mean of every record", (secs, lacking), (350 / 3, 1))
+    check("empty history: 0 and every cell lacking", rm.wall_estimate([], [one("a"), one("b")], 2), (0.0, 2))
+    check("line format", rm.wall_line(2 * 3600 + 14 * 60, 16.0, 3), "est wall: 2h 14m (factor 16, 3 cells lack history)")
+
+
+def test_dry_run_prints_wall_line_after_verdict():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "tasks" / "a").mkdir(parents=True)
+        (d / "tasks" / "a" / "prompt.md").write_text("hi")
+        (d / "configs" / "bare").mkdir(parents=True)
+        (d / "sc").mkdir()
+        _write_scores(d / "sc", "20260101T000000Z-x.scores.json", [_wrec("a", "claude-sonnet-4-6", 300)])
+        base = [sys.executable, str(Path(rm.__file__)), "--dry-run", "--tasks", "a", "--layers", "bare", "--models", "sonnet",
+                "--tasks-dir", str(d / "tasks"), "--config-dir", str(d / "configs"), "--runs-dir", str(d / "runs"),
+                "--scorecards-dir", str(d / "sc")]
+        out = subprocess.run(base, capture_output=True, text=True).stdout.splitlines()
+        i = next(k for k, ln in enumerate(out) if ln.startswith("verdict: "))
+        check("wall line directly after the verdict (300 s x 16)", out[i + 1], "est wall: 1h 20m (factor 16, 0 cells lack history)")
+        out = subprocess.run(base + ["--stall-factor", "1"], capture_output=True, text=True).stdout.splitlines()
+        check("--stall-factor overrides", out[i + 1], "est wall: 0h 5m (factor 1, 0 cells lack history)")
+        out = subprocess.run(base[:-2] + ["--scorecards-dir", str(d / "none")], capture_output=True, text=True).stdout.splitlines()
+        i = next(k for k, ln in enumerate(out) if ln.startswith("verdict: "))
+        check("no history: every cell lacks it", out[i + 1], "est wall: 0h 0m (factor 16, 1 cells lack history)")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
