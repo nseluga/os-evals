@@ -3,6 +3,7 @@ gate: capability
 contaminated: true
 group: knowledge-informed
 curated_skill: ai-usage-optimizer
+trigger: "audit my AI usage:"
 source: authored fixture modeled on the ai-usage-optimizer skill's own job
 description: |
   Exercises ai-usage-optimizer: given a snapshot of skills + memory + a usage log,

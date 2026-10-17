@@ -4,6 +4,7 @@ contaminated: false
 group: clean
 judge_files: index.html
 curated_skill: dt-ui
+trigger: "improve this frontend's accessibility:"
 source: authored fixture (self-contained static HTML with a11y violations)
 description: |
   Exercises dt-ui (UI Specialist): fix concrete accessibility defects in a component.

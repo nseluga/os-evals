@@ -3,6 +3,7 @@ default: true
 contaminated: true
 group: knowledge-informed
 curated_skill: lane
+trigger: "update this lane plan:"
 tools: default
 timeout_sec: 900
 max_budget_usd: 1.50

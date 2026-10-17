@@ -2,6 +2,7 @@ category: knowledge
 gate: knowledge
 group: skill-specific
 curated_skill: dt-qa
+trigger: "QA this and give a PASS/FAIL verdict:"
 contaminated: false
 source: authored to target dt-qa skill — rung 4
 description: |
