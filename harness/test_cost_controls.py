@@ -42,7 +42,7 @@ def test_tools_none():
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         mk_task(root, "n", "tools: none\n")
-        mk_task(root, "x", "tools: Read\n")
+        mk_task(root, "x", "tools: Bash\n")  # any value other than none/read is ignored (`tools: read` now adds a --tools list, item 4.1)
         mk_task(root, "y", "timeout_sec: 5\n")
         cmd = build_cmd("m", ["--bare"], read_task_meta(root / "n"), 1.5)
         i = cmd.index("--tools")

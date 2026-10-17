@@ -4,7 +4,8 @@ default: true
 contaminated: true
 group: knowledge-informed
 curated_skill: humanizer
-tools: none  # text-only rewrite; no tools so the run cannot read the disk or send mail
+trigger: "humanize this:"
+tools: read  # read-only tools: Skill, Read, Glob, Grep (no Bash/Write/Edit/web, so the run cannot act on real systems or modify disk)
 timeout_sec: 600
 max_budget_usd: 0.75
 description: |

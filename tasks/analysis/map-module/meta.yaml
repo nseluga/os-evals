@@ -3,6 +3,7 @@ gate: capability
 contaminated: false
 group: clean
 curated_skill: dt-analyze
+trigger: "analyze this codebase:"
 source: real project-dashboard merge pipeline @ 185eda8
 description: |
   Exercises dt-analyze (Code Analyzer): map an unfamiliar multi-file module before a

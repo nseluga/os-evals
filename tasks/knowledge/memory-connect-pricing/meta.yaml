@@ -1,6 +1,6 @@
 category: knowledge
 gate: knowledge
-tools: none  # text-only answer; no tools so the run cannot act on real systems or read the disk
+tools: read  # read-only tools: Skill, Read, Glob, Grep (no Bash/Write/Edit/web, so the run cannot act on real systems or modify disk)
 contaminated: false
 group: knowledge-informed
 curated_skill: none (tests memory layer)

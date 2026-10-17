@@ -4,6 +4,7 @@ contaminated: false
 group: clean
 judge_files: test_solution.py
 curated_skill: dt-qa
+trigger: "write and run tests to verify this:"
 source: authored fixture (self-contained; planted contract bug)
 description: |
   Exercises dt-qa (QA / Tester): given an implementation whose behavior violates its
