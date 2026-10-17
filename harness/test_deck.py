@@ -2,6 +2,8 @@
 
 Run: python3 harness/test_deck.py
 """
+import contextlib
+import io
 import json
 import re
 import socket
@@ -217,6 +219,52 @@ def test_preset_build_and_report():
             check("zero pairs msg", str(e), "no eligible pairs: nothing written (strata: memory-vs-full=4)")
         else:
             raise AssertionError("no SystemExit")
+
+
+def test_preset_one_repeat():
+    """--repeat 1 data (one run per layer per cell): a run anchors one pair per stratum, null falls back to flipped."""
+    def fixture(tmp, layers, ntasks=10):
+        fx = Fixture(tmp, ntasks=0)
+        for i in range(ntasks):
+            task = f"alpha/t{i:02d}"
+            (fx.tasks / task).mkdir(parents=True)
+            (fx.tasks / task / "prompt.md").write_text(f"Summarize widget report {i}.")
+            (fx.tasks / task / "rubric.md").write_text("1 point per fact.")
+            for rung in layers:
+                fx.add(task, rung, 1, True, f"Widget answer {i} {rung}.")
+        return fx
+
+    st = deck.parse_strata(deck.PRESETS["skill-lift"])
+    want = {"skills-vs-skills~forced": 10, "skills-vs-skills~trigger": 4, "bare-vs-skills~forced": 4, "null": 2}
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = fixture(tmp, ["skills", "skills~forced", "skills~trigger", "bare"])
+        for seed in range(5):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                _, dk, key = deck.build(fx.scores_file(), seed, 20, fx.runs, fx.tasks, fx.human, f"O{seed}", strata=st)
+            check(f"seed {seed} deck size", len(dk), 20)
+            check(f"seed {seed} quotas met", counts(key), want)
+            check(f"seed {seed} no short-stratum warning", err.getvalue(), "")
+            nulls = [e for e in key.values() if e["stratum"] == "null"]
+            check(f"seed {seed} null pairs are flipped (stems A == B)",
+                  [e["stems"]["A"] == e["stems"]["B"] for e in nulls], [True, True])
+    # no trigger / bare arms at all: the deck tops up with nulls and the stderr warning names both short strata
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = fixture(tmp, ["skills", "skills~forced"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _, dk, key = deck.build(fx.scores_file(), 1, 20, fx.runs, fx.tasks, fx.human, "O", strata=st)
+        check("short deck still 20", len(dk), 20)
+        check("short deck counts", counts(key), {"skills-vs-skills~forced": 10, "null": 10})
+        check("short-stratum warnings", err.getvalue().splitlines(),
+              ["warning: stratum skills-vs-skills~trigger: 0/4", "warning: stratum bare-vs-skills~forced: 0/4"])
+    # default strata never warn, even when a stratum is empty
+    with tempfile.TemporaryDirectory() as tmp:
+        fx = Fixture(tmp, mem_passes=False)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            fx.build()
+        check("default path prints no warning", err.getvalue(), "")
 
 
 def test_fill_forward():
@@ -682,6 +730,7 @@ if __name__ == "__main__":
     test_preset_quotas()
     test_preset_mutual_exclusion()
     test_preset_build_and_report()
+    test_preset_one_repeat()
     test_fill_forward()
     test_build_zero_pairs()
     test_exclusions()

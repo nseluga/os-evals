@@ -246,21 +246,25 @@ def pair_identity(a, b):
 def select(strata, n, rng, rated=frozenset(), active=None):
     """Pick up to n pairs. Uniform within a stratum; a shortage rolls into the next stratum
     (then the one after); leftovers top up from any stratum with candidates remaining.
-    Returns [(stratum_idx, (a, b))]. Fewer than n only if the whole pool is exhausted."""
-    task_n, used, chosen = {}, set(), []
+    Returns [(stratum_idx, (a, b))]. Fewer than n only if the whole pool is exhausted.
+    A run's stem is used once per deck; under custom `active` strata, once per stratum (the same
+    run may anchor several comparisons, so --repeat 1 data still fills every stratum)."""
+    custom = active is not None and active is not STRATA
+    task_n, used, chosen = {}, {}, []
 
     def take(si, want):
         got = 0
+        seen = used.setdefault(si if custom else 0, set())
         pool = list(strata[si])
         rng.shuffle(pool)
         for a, b in pool:
             if got >= want:
                 break
             if (pair_identity(a, b) in rated or task_n.get(a["task"], 0) >= MAX_PER_TASK
-                    or a["stem"] in used or b["stem"] in used):
+                    or a["stem"] in seen or b["stem"] in seen):
                 continue
             task_n[a["task"]] = task_n.get(a["task"], 0) + 1
-            used.update((a["stem"], b["stem"]))
+            seen.update((a["stem"], b["stem"]))
             chosen.append((si, (a, b)))
             got += 1
         return got
@@ -325,6 +329,11 @@ def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=No
     if not chosen:
         raise SystemExit("no eligible pairs: nothing written" + (
             "" if strata is None else " (strata: " + ",".join(f"{k}={q}" for k, q in strata) + ")"))
+    if strata is not None and strata is not STRATA:  # custom strata: make a short stratum visible
+        got = [sum(1 for si, _ in chosen if si == i) for i in range(len(strata))]
+        for (name, _), q, g in zip(strata, quotas(n, strata), got):
+            if g < q:
+                print(f"warning: stratum {name}: {g}/{q}", file=sys.stderr)
     rng.shuffle(chosen)
     ts = ts or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     rdir = human_dir / "rounds" / ts
