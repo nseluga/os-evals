@@ -3,6 +3,7 @@ gate: capability
 contaminated: false
 group: clean
 curated_skill: dt-review
+trigger: "review this code before it ships:"
 source: authored fixture (self-contained; no ~/os facts required)
 description: |
   Exercises the dt-review Optimization Reviewer job: given code with planted flaws,

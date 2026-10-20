@@ -142,7 +142,27 @@ def test_ko_leaked():
     check("no events", run_matrix.ko_leaked([], "quote"), False)
 
 
+def test_arm_mods_pass_through():
+    check("parse_layer", [parse_layer("skills~trigger"), parse_layer("full~forced.dev-team")],
+          [("skills", "trigger"), ("full", "forced.dev-team")])
+    with tempfile.TemporaryDirectory() as d:
+        t = _template(d)
+        for mod in ("trigger", "forced", "forced.quote"):
+            cfg = Path(d) / f"cfg-{mod}"
+            build_run_config(t, cfg, mod)
+            check(f"{mod}: config identical to plain (hooks kept, skills symlink whole)",
+                  (json.loads((cfg / "settings.json").read_text()), os.readlink(cfg / "skills")),
+                  (SETTINGS, str(Path(d) / "src" / "skills")))
+    try:
+        build_run_config(Path("/nonexistent"), Path("/tmp/never"), "forced-ish")
+    except ValueError:
+        print("  ok  malformed arm mod still raises")
+    else:
+        raise AssertionError("malformed arm mod did not raise")
+
+
 if __name__ == "__main__":
+    test_arm_mods_pass_through()
     test_parse_layer()
     test_nohook_strips_hooks_only()
     test_ko_skill_dir()

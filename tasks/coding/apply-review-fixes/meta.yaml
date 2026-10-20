@@ -3,10 +3,11 @@ gate: capability
 contaminated: false
 group: clean
 judge_files: handler.py
-curated_skill: dt-fix
+curated_skill: dt-engineer
+trigger: "apply these QA and review findings:"
 source: authored fixture (self-contained; review report + flawed code)
 description: |
-  Exercises dt-fix (Bug Fixer): given a review report and the code it critiques, apply
+  Exercises dt-engineer (applying review findings): given a review report and the code it critiques, apply
   ALL the cited fixes while preserving behavior. Seeded workspace (handler.py + REVIEW.md);
   the model edits handler.py in place.
 

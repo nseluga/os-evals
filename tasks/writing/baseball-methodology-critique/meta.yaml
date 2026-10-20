@@ -3,6 +3,7 @@ gate: capability
 contaminated: false
 group: clean
 curated_skill: baseball-research-advisor
+# trigger/forced arms skipped: skill not in ~/os snapshot (personal overlay)
 source: authored fixture (self-contained; classic evaluation-design flaws)
 description: |
   Exercises baseball-research-advisor: skeptically peer-review a baseball analytics

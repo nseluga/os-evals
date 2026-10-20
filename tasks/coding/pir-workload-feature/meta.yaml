@@ -4,6 +4,7 @@ default: false  # excluded from the default task set; run with --tasks
 contaminated: true
 group: knowledge-informed
 curated_skill: baseball-research
+# trigger/forced arms skipped: skill not in ~/os snapshot (personal overlay)
 repeat: 1  # was 3; cost control 2026-09-28 (PLAN batch 4 item 10)
 multi_turn: true
 timeout_sec: 1800

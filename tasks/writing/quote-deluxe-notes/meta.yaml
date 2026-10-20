@@ -3,6 +3,7 @@ default: true
 contaminated: true
 group: knowledge-informed
 curated_skill: quote
+trigger: "write a quote for this client:"
 timeout_sec: 900
 max_budget_usd: 1.50
 # tools: default (not none) -- the run must be able to read the seed folder and write the quote file

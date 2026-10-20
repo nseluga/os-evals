@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Blind human deck: build A/B pairs from scored runs, serve them for rating, report agreement.
 
-  deck.py build  --scores-file F [--seed N] [--n 20]   -> human/rounds/<ts>/{deck,key}.json
+  deck.py build  --scores-file F [--seed N] [--n 20] [--strata CSV | --preset skill-lift]
+                                                       -> human/rounds/<ts>/{deck,key}.json
   deck.py serve  --round TS [--port P]                 -> http.server on 127.0.0.1, appends human/picks.jsonl
   deck.py report [--round TS]                          -> kappa / agreement / per-layer-pair human win rates
 
@@ -11,6 +12,7 @@ Stdlib only.
 """
 import argparse
 import difflib
+import functools
 import json
 import math
 import random
@@ -27,11 +29,56 @@ RUNGS = ["bare", "claude-md", "memory", "skills", "full"]  # adjacency order
 # (name, quota at n=20). Order = fill-forward order: a shortage rolls into the next stratum.
 STRATA = [("memory-vs-skills", 6), ("skills-vs-full", 6), ("adjacent-tie", 4),
           ("check-disagree", 2), ("null", 2)]
+# Custom strata: "<layerA>-vs-<layerB>=<count>,...,null=<count>" (split on the literal "-vs-").
+PRESETS = {"skill-lift": "skills-vs-skills~forced=10,skills-vs-skills~trigger=4,"
+                         "bare-vs-skills~forced=4,null=2"}
 MAX_PER_TASK = 2
 ARTIFACT_CAP = 8192
 PICKS = {"A": "A", "B": "B", "tie": "tie", "skip": "skip"}
 MAX_BODY = 16 * 1024
 MAX_NOTE = 2000
+
+
+def parse_strata(text):
+    """CSV "<layerA>-vs-<layerB>=<count>,null=<count>" -> [(name, count)]. ValueError on bad syntax."""
+    out, seen = [], set()
+    for part in (text or "").split(","):
+        name, eq, cnt = part.strip().rpartition("=")
+        if not eq or not cnt.strip().isdigit() or int(cnt) < 1:
+            raise ValueError(f"bad stratum {part.strip()!r}: want <layerA>-vs-<layerB>=<count> or null=<count>")
+        name = name.strip()
+        if name != "null":
+            ends = name.split("-vs-")
+            if len(ends) != 2 or not all(ends) or ends[0] == ends[1]:
+                raise ValueError(f"bad stratum name {name!r}: want <layerA>-vs-<layerB> (distinct layers) or null")
+        ident = name if name == "null" else frozenset(ends)
+        if ident in seen:
+            raise ValueError(f"duplicate stratum {name!r}")
+        seen.add(ident)
+        out.append((name, int(cnt)))
+    return out
+
+
+def _strata_layers(strata):
+    return {x for name, _ in strata if name != "null" for x in name.split("-vs-")}
+
+
+@functools.lru_cache(maxsize=None)
+def _custom_index(strata):
+    """({frozenset({A, B}): stratum idx}, null idx or None) for a tuple of (name, count)."""
+    pairs, null = {}, None
+    for i, (name, _) in enumerate(strata):
+        if name == "null":
+            null = i
+        else:
+            pairs[frozenset(name.split("-vs-"))] = i
+    return pairs, null
+
+
+def _rung_key(r):
+    """Sort key: known rungs by RUNGS index; a variant `base~x` right after its base; unknown bases last."""
+    base = r.split("~", 1)[0]
+    return (RUNGS.index(base) if base in RUNGS else len(RUNGS), "~" in r, r)
 
 
 # --------------------------------------------------------------------------- artifact text
@@ -99,7 +146,7 @@ def _artifact(run, tasks_dir):
 
 
 # --------------------------------------------------------------------------- candidates
-def _valid_record(r):
+def _valid_record(r, layers=RUNGS):
     f = r.get("file") or ""
     if f.startswith("[") or r.get("repeat_majority"):
         return False  # synthetic majority-vote record
@@ -107,15 +154,15 @@ def _valid_record(r):
            "runaway", "runaway_output")
     if any(r.get(k) for k in bad):
         return False
-    return isinstance(r.get("passed"), bool) and r.get("rung") in RUNGS and f.endswith(".json")
+    return isinstance(r.get("passed"), bool) and r.get("rung") in layers and f.endswith(".json")
 
 
-def load_runs(scores, runs_dir, tasks_dir):
+def load_runs(scores, runs_dir, tasks_dir, layers=RUNGS):
     """Valid, rubric-task runs: dicts with stem/task/rung/model/effort/passed/cell/transcript."""
     runs_dir, tasks_dir = Path(runs_dir), Path(tasks_dir)
     out = []
     for r in scores:
-        if not _valid_record(r) or not (tasks_dir / r["task"] / "rubric.md").exists():
+        if not _valid_record(r, layers) or not (tasks_dir / r["task"] / "rubric.md").exists():
             continue
         try:
             t = json.loads((runs_dir / r["file"]).read_text())
@@ -133,10 +180,17 @@ def load_runs(scores, runs_dir, tasks_dir):
     return sorted(out, key=lambda x: x["stem"])
 
 
-def stratum_of(a, b):
-    """Stratum index for two runs of one cell, or None. Null (same rung) -> 4."""
+def stratum_of(a, b, strata=None):
+    """Stratum index for two runs of one cell, or None. Null (same rung) -> 4.
+    Custom `strata` (list of (name, count)): unordered {A, B} match of the runs' rungs, or the
+    "null" stratum for one rung with different stems; no pass-gating."""
     if a["cell"] != b["cell"]:
         return None
+    if strata is not None and strata is not STRATA:
+        pairs, null = _custom_index(tuple(strata))
+        if a["rung"] == b["rung"]:
+            return null if a["stem"] != b["stem"] else None
+        return pairs.get(frozenset((a["rung"], b["rung"])))
     if a["rung"] == b["rung"]:
         return 4 if a["stem"] != b["stem"] else None
     lo, hi = sorted((a["rung"], b["rung"]), key=RUNGS.index)
@@ -151,25 +205,35 @@ def stratum_of(a, b):
     return 2 if (lo, hi) in (("bare", "claude-md"), ("claude-md", "memory")) else None
 
 
-def candidates(runs):
-    """Per-stratum sorted lists of (run, run) with run.rung order lo->hi (null: stem order)."""
-    strata = [[] for _ in STRATA]
+def candidates(runs, active=None):
+    """Per-stratum sorted lists of (run, run) with run.rung order lo->hi (null: stem order).
+    `active`: custom strata (list of (name, count)); lo is the run on layer A of `A-vs-B`."""
+    custom = active is not None and active is not STRATA
+    defs = active if custom else STRATA
+    strata = [[] for _ in defs]
+    null = _custom_index(tuple(defs))[1] if custom else 4
     for i, a in enumerate(runs):
         for b in runs[i + 1:]:
-            s = stratum_of(a, b)
+            s = stratum_of(a, b, defs if custom else None)
             if s is None:
                 continue
-            lo, hi = (b, a) if s != 4 and RUNGS.index(a["rung"]) > RUNGS.index(b["rung"]) else (a, b)
+            if custom:
+                swap = s != null and a["rung"] != defs[s][0].split("-vs-")[0]
+            else:
+                swap = s != 4 and RUNGS.index(a["rung"]) > RUNGS.index(b["rung"])
+            lo, hi = (b, a) if swap else (a, b)
             strata[s].append((lo, hi))
-    if not strata[4]:  # no second valid repeat anywhere: "flipped" -- the same run on both sides
-        strata[4] = [(r, r) for r in runs]
+    if null is not None and not strata[null]:  # no second valid repeat anywhere: "flipped" -- the same run on both sides
+        strata[null] = [(r, r) for r in runs]
     for lst in strata:
         lst.sort(key=lambda p: (p[0]["stem"], p[1]["stem"]))
     return strata
 
 
-def quotas(n):
-    base = [q * n // 20 for _, q in STRATA]
+def quotas(n, strata=None):
+    strata = STRATA if strata is None else strata
+    total = sum(q for _, q in strata)
+    base = [q * n // total for _, q in strata]
     for i in range(n - sum(base)):
         base[i % len(base)] += 1
     return base
@@ -179,33 +243,37 @@ def pair_identity(a, b):
     return frozenset((a["stem"], b["stem"]))
 
 
-def select(strata, n, rng, rated=frozenset()):
+def select(strata, n, rng, rated=frozenset(), active=None):
     """Pick up to n pairs. Uniform within a stratum; a shortage rolls into the next stratum
     (then the one after); leftovers top up from any stratum with candidates remaining.
-    Returns [(stratum_idx, (a, b))]. Fewer than n only if the whole pool is exhausted."""
-    task_n, used, chosen = {}, set(), []
+    Returns [(stratum_idx, (a, b))]. Fewer than n only if the whole pool is exhausted.
+    A run's stem is used once per deck; under custom `active` strata, once per stratum (the same
+    run may anchor several comparisons, so --repeat 1 data still fills every stratum)."""
+    custom = active is not None and active is not STRATA
+    task_n, used, chosen = {}, {}, []
 
     def take(si, want):
         got = 0
+        seen = used.setdefault(si if custom else 0, set())
         pool = list(strata[si])
         rng.shuffle(pool)
         for a, b in pool:
             if got >= want:
                 break
             if (pair_identity(a, b) in rated or task_n.get(a["task"], 0) >= MAX_PER_TASK
-                    or a["stem"] in used or b["stem"] in used):
+                    or a["stem"] in seen or b["stem"] in seen):
                 continue
             task_n[a["task"]] = task_n.get(a["task"], 0) + 1
-            used.update((a["stem"], b["stem"]))
+            seen.update((a["stem"], b["stem"]))
             chosen.append((si, (a, b)))
             got += 1
         return got
 
     carry = 0
-    for si, q in enumerate(quotas(n)):
+    for si, q in enumerate(quotas(n, active)):
         want = q + carry
         carry = want - take(si, want)
-    for si in range(len(STRATA)):
+    for si in range(len(strata)):
         if len(chosen) >= n:
             break
         take(si, n - len(chosen))
@@ -248,15 +316,24 @@ def rated_identities(human_dir):
     return out
 
 
-def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=None, ts=None):
+def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=None, ts=None,
+          strata=None):
+    active = STRATA if strata is None else strata
     runs_dir, tasks_dir = Path(runs_dir or REPO / "runs"), Path(tasks_dir or REPO / "tasks")
     human_dir = Path(human_dir or REPO / "human")
     scores = json.loads(Path(scores_file).read_text())["scores"]
-    runs = load_runs(scores, runs_dir, tasks_dir)
+    runs = load_runs(scores, runs_dir, tasks_dir,
+                     RUNGS if strata is None else sorted(set(RUNGS) | _strata_layers(strata)))
     rng = random.Random(seed)
-    chosen = select(candidates(runs), n, rng, rated_identities(human_dir))
+    chosen = select(candidates(runs, strata), n, rng, rated_identities(human_dir), strata)
     if not chosen:
-        raise SystemExit("no eligible pairs: nothing written")
+        raise SystemExit("no eligible pairs: nothing written" + (
+            "" if strata is None else " (strata: " + ",".join(f"{k}={q}" for k, q in strata) + ")"))
+    if strata is not None and strata is not STRATA:  # custom strata: make a short stratum visible
+        got = [sum(1 for si, _ in chosen if si == i) for i in range(len(strata))]
+        for (name, _), q, g in zip(strata, quotas(n, strata), got):
+            if g < q:
+                print(f"warning: stratum {name}: {g}/{q}", file=sys.stderr)
     rng.shuffle(chosen)
     ts = ts or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     rdir = human_dir / "rounds" / ts
@@ -274,7 +351,7 @@ def build(scores_file, seed=0, n=20, runs_dir=None, tasks_dir=None, human_dir=No
         deck.append({"id": pid, "prompt": prompt, "A": _artifact(a, tasks_dir),
                      "B": _artifact(b, tasks_dir)})
         key[pid] = {"stems": {"A": a["stem"], "B": b["stem"]}, "layers": {"A": a["rung"], "B": b["rung"]},
-                    "task": a["task"], "stratum": STRATA[si][0]}
+                    "task": a["task"], "stratum": active[si][0]}
     rdir.mkdir(parents=True)
     (rdir / "deck.json").write_text(json.dumps({"round": ts, "pairs": deck}, indent=1))
     (rdir / "key.json").write_text(json.dumps({"round": ts, "seed": seed, "pairs": key}, indent=1))
@@ -518,7 +595,7 @@ def report(round_ts=None, human_dir=None, runs_dir=None):
             jdg.append(j)
         la, lb = e["layers"]["A"], e["layers"]["B"]
         if la != lb:
-            lo, hi = sorted((la, lb), key=RUNGS.index)
+            lo, hi = sorted((la, lb), key=_rung_key)
             w = wins.setdefault(f"{lo}>{hi}", {"higher": 0, "lower": 0, "tie": 0})
             if pick == "tie":
                 w["tie"] += 1
@@ -537,6 +614,13 @@ def report(round_ts=None, human_dir=None, runs_dir=None):
 
 
 # --------------------------------------------------------------------------- cli
+def _strata_arg(text):
+    try:
+        return parse_strata(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     com = argparse.ArgumentParser(add_help=False)
@@ -547,7 +631,10 @@ def main(argv=None):
     b = sub.add_parser("build", parents=[com])
     b.add_argument("--scores-file", required=True)
     b.add_argument("--seed", type=int, default=0)
-    b.add_argument("--n", type=int, default=20)
+    b.add_argument("--n", type=int, help="pairs to build (default: sum of the strata counts, 20)")
+    g = b.add_mutually_exclusive_group()
+    g.add_argument("--strata", type=_strata_arg, help="CSV <layerA>-vs-<layerB>=<count>,...,null=<count>")
+    g.add_argument("--preset", choices=sorted(PRESETS), help="named strata set")
     s = sub.add_parser("serve", parents=[com])
     s.add_argument("--round", required=True)
     s.add_argument("--port", type=int, default=0)
@@ -555,7 +642,11 @@ def main(argv=None):
     r.add_argument("--round")
     a = ap.parse_args(argv)
     if a.cmd == "build":
-        ts, deck, key = build(a.scores_file, a.seed, a.n, a.runs_dir, a.tasks_dir, a.human_dir)
+        custom = a.strata or (parse_strata(PRESETS[a.preset]) if a.preset else None)
+        if a.n is None:
+            a.n = sum(q for _, q in custom) if custom else 20
+        ts, deck, key = build(a.scores_file, a.seed, a.n, a.runs_dir, a.tasks_dir, a.human_dir,
+                              strata=custom)
         counts = {}
         for e in key.values():
             counts[e["stratum"]] = counts.get(e["stratum"], 0) + 1
