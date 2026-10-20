@@ -150,8 +150,9 @@ def _valid_record(r, layers=RUNGS):
     f = r.get("file") or ""
     if f.startswith("[") or r.get("repeat_majority"):
         return False  # synthetic majority-vote record
-    bad = ("infra_error", "is_error", "timed_out", "budget_exceeded", "contaminated",
-           "runaway", "runaway_output")
+    # `contaminated` is the TASK meta flag (knowledge-informed task), not run contamination; score.py reports
+    # a run that read outside its workspace as infra_error with infra_reason "contaminated".
+    bad = ("infra_error", "is_error", "timed_out", "budget_exceeded", "runaway", "runaway_output")
     if any(r.get(k) for k in bad):
         return False
     return isinstance(r.get("passed"), bool) and r.get("rung") in layers and f.endswith(".json")

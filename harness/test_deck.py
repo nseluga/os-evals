@@ -312,7 +312,7 @@ def test_exclusions():
             (fx.tasks / d / "prompt.md").write_text("p")
             (fx.tasks / d / "rubric.md").write_text("r")
         bad.append(fx.add(t, "memory", 1, True, infra_error=True))
-        bad.append(fx.add(t, "skills", 1, True, contaminated=True))
+        bad.append(fx.add(t, "skills", 1, True, infra_error=True, infra_reason="contaminated"))
         bad.append(fx.add(t, "skills", 2, True, is_error=True))
         bad.append(fx.add(t, "full", 1, True, timed_out=True))
         bad.append(fx.add(t, "full", 2, True, budget_exceeded=True))
@@ -320,6 +320,7 @@ def test_exclusions():
         bad.append(fx.add(t, "claude-md", 1, True, result="   "))
         bad.append(fx.add(t, "claude-md", 2, True, ws=False))
         bad.append(fx.add(t, "bare", 2, "yes"))
+        keep = fx.add("alpha/t01", "skills", 9, True, contaminated=True)  # task-meta flag, not run contamination
         # no rubric
         (fx.tasks / "alpha/t91").mkdir(parents=True)
         (fx.tasks / "alpha/t91/prompt.md").write_text("p")
@@ -339,6 +340,7 @@ def test_exclusions():
         runs = deck.load_runs(fx.scores, fx.runs, fx.tasks)
         check("no duplicate stems", len(runs), len({r["stem"] for r in runs}))
         check("runs from bad tasks", [r for r in runs if r["task"] in ("alpha/t90", "alpha/t91")], [])
+        check("task-meta contaminated flag kept", keep in {r["stem"] for r in runs}, True)
 
 
 def test_already_rated_and_skip_prior():
